@@ -34,6 +34,7 @@ from src.services.background_service import BackgroundService
 from src.services.image_service import ImageService
 from src.services.tooling_service import ToolingService
 from src.services.video_service import VideoService
+from src.ui.spritesheet_preview_dialog import SpriteSheetPreviewDialog
 from src.ui.workers import TaskWorker
 
 
@@ -63,6 +64,10 @@ class MainWindow(QMainWindow):
         self._is_playing = False
         self._syncing_timeline = False
         self._is_closing = False
+        self._pending_build_context: tuple[AtlasParams, int] | None = None
+        self._preview_atlas_params: AtlasParams | None = None
+        self._preview_frame_count = 0
+        self._spritesheet_preview_dialog: SpriteSheetPreviewDialog | None = None
 
         self._build_ui()
         self._setup_media_player()
@@ -201,6 +206,9 @@ class MainWindow(QMainWindow):
         self.atlas_preview_label.setStyleSheet("border: 1px solid #777; background: #111; color: #ccc;")
         layout.addWidget(self.atlas_preview_label, 1)
 
+        self.preview_video_button = QPushButton("Video Preview")
+        layout.addWidget(self.preview_video_button)
+
         self.atlas_params_label = QLabel("Параметры atlas не заданы")
         self.atlas_params_label.setWordWrap(True)
         layout.addWidget(self.atlas_params_label)
@@ -270,6 +278,7 @@ class MainWindow(QMainWindow):
         self.extract_button.clicked.connect(self._extract_frames)
         self.remove_bg_button.clicked.connect(self._remove_background)
         self.build_button.clicked.connect(self._build_spritesheet)
+        self.preview_video_button.clicked.connect(self._open_spritesheet_preview)
         self.export_button.clicked.connect(self._export_png)
 
         self.columns_spin.valueChanged.connect(self._update_atlas_params_label)
@@ -311,6 +320,7 @@ class MainWindow(QMainWindow):
         self.media_player.setPosition(0)
 
         self.atlas_preview_label.setPixmap(QPixmap())
+        self._reset_spritesheet_preview_state(close_dialog=True)
         self._set_status(f"Видео загружено: {video_path.name}")
         self._refresh_action_states()
 
@@ -479,6 +489,7 @@ class MainWindow(QMainWindow):
         self.state.cut_frames = []
         self.state.atlas_path = None
         self.atlas_preview_label.setPixmap(QPixmap())
+        self._reset_spritesheet_preview_state(close_dialog=True)
         self._set_status(f"Извлечено кадров: {len(self.state.extracted_frames)}")
 
         if self.auto_remove_checkbox.isChecked() and self.state.extracted_frames:
@@ -533,6 +544,8 @@ class MainWindow(QMainWindow):
             return
 
         self.state.atlas_path = None
+        self._pending_build_context = (atlas_params, frame_count)
+        self._reset_spritesheet_preview_state(close_dialog=True)
         self._refresh_action_states()
 
         output_path = self.state.output_dir / "spritesheet.png"
@@ -572,6 +585,8 @@ class MainWindow(QMainWindow):
         self.state.atlas_path = output_path
         if output_path.exists():
             self._set_preview_image(self.atlas_preview_label, output_path)
+        if self._pending_build_context is not None:
+            self._preview_atlas_params, self._preview_frame_count = self._pending_build_context
         self._set_status(f"Spritesheet собран: {output_path.name}")
         self._refresh_action_states()
 
@@ -641,12 +656,14 @@ class MainWindow(QMainWindow):
         has_video = self.state.video_path is not None
         has_frames = bool(self.state.extracted_frames)
         has_sheet = self.state.atlas_path is not None and self.state.atlas_path.exists()
+        has_preview_data = self._preview_atlas_params is not None and self._preview_frame_count > 0
 
         enabled = not self._busy
         self.load_video_button.setEnabled(enabled)
         self.extract_button.setEnabled(enabled and has_video)
         self.remove_bg_button.setEnabled(enabled and has_frames)
         self.build_button.setEnabled(enabled and has_frames)
+        self.preview_video_button.setEnabled(enabled and has_sheet and has_preview_data)
         self.export_button.setEnabled(enabled and has_sheet)
 
         self.timeline_slider.setEnabled(enabled and has_video)
@@ -693,6 +710,7 @@ class MainWindow(QMainWindow):
 
     def _on_worker_finished(self, worker: TaskWorker) -> None:
         self._active_workers.discard(worker)
+        self._pending_build_context = None
         if self._is_closing:
             return
         self._set_busy(False)
@@ -702,6 +720,7 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802
         self._is_closing = True
+        self._reset_spritesheet_preview_state(close_dialog=True)
         self._pause_video()
         self.media_player.stop()
         self._auto_remove_pending = False
@@ -714,3 +733,48 @@ class MainWindow(QMainWindow):
 
     def _show_error(self, message: str) -> None:
         QMessageBox.critical(self, "Ошибка", message)
+
+    def _reset_spritesheet_preview_state(self, close_dialog: bool) -> None:
+        self._preview_atlas_params = None
+        self._preview_frame_count = 0
+        if close_dialog and self._spritesheet_preview_dialog is not None:
+            self._spritesheet_preview_dialog.close()
+            self._spritesheet_preview_dialog = None
+
+    @Slot()
+    def _open_spritesheet_preview(self) -> None:
+        if self.state.atlas_path is None or not self.state.atlas_path.exists():
+            self._show_error("Сначала соберите spritesheet")
+            return
+        if self._preview_atlas_params is None or self._preview_frame_count <= 0:
+            self._show_error("Нет данных для предпросмотра spritesheet")
+            return
+
+        if self._spritesheet_preview_dialog is not None:
+            self._spritesheet_preview_dialog.close()
+            self._spritesheet_preview_dialog = None
+
+        dialog = SpriteSheetPreviewDialog(
+            atlas_path=self.state.atlas_path,
+            atlas_params=self._preview_atlas_params,
+            frame_count=self._preview_frame_count,
+            default_fps=self._default_spritesheet_preview_fps(),
+            parent=self,
+        )
+        dialog.finished.connect(self._on_spritesheet_preview_closed)
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+        self._spritesheet_preview_dialog = dialog
+
+    @Slot(int)
+    def _on_spritesheet_preview_closed(self, _result: int) -> None:
+        self._spritesheet_preview_dialog = None
+
+    def _default_spritesheet_preview_fps(self) -> float:
+        mode = self._current_extract_mode()
+        if mode == ExtractMode.TARGET_FPS:
+            return float(self.fps_spin.value())
+        if self.state.video_meta is not None and self.state.video_meta.fps > 0:
+            return min(60.0, float(self.state.video_meta.fps))
+        return 8.0

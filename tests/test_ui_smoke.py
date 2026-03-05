@@ -31,8 +31,8 @@ def test_exact_count_mode_switches_input_field() -> None:
     assert exact_index >= 0
     window.sampling_mode_combo.setCurrentIndex(exact_index)
 
-    assert window.count_spin.isVisible()
-    assert not window.fps_spin.isVisible()
+    assert not window.count_spin.isHidden()
+    assert window.fps_spin.isHidden()
     window.close()
 
 
@@ -48,4 +48,13 @@ def test_frame_size_dropdowns_use_fixed_values() -> None:
     assert actual_height_sizes == expected_sizes
     assert window.frame_width_combo.currentData() == 512
     assert window.frame_height_combo.currentData() == 512
+    window.close()
+
+
+def test_spritesheet_video_preview_button_initially_disabled() -> None:
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow()
+
+    assert window.preview_video_button.text() == "Video Preview"
+    assert not window.preview_video_button.isEnabled()
     window.close()
