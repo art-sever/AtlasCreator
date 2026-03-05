@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import shutil
-import subprocess
 import math
 from pathlib import Path
 
-from PySide6.QtCore import QThreadPool, QTimer, Qt, Slot
+from PySide6.QtCore import QSignalBlocker, QThreadPool, Qt, QUrl, Slot
 from PySide6.QtGui import QCloseEvent, QPixmap
+from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
+from PySide6.QtMultimediaWidgets import QVideoWidget
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -58,17 +59,11 @@ class MainWindow(QMainWindow):
         self._busy = False
         self._auto_remove_pending = False
         self._is_playing = False
+        self._syncing_timeline = False
         self._is_closing = False
 
-        self.preview_timer = QTimer(self)
-        self.preview_timer.setSingleShot(True)
-        self.preview_timer.setInterval(120)
-        self.preview_timer.timeout.connect(self._render_preview_for_slider)
-
-        self.playback_timer = QTimer(self)
-        self.playback_timer.timeout.connect(self._on_playback_tick)
-
         self._build_ui()
+        self._setup_media_player()
         self._connect_signals()
         self._update_sampling_mode_ui()
         self._update_atlas_params_label()
@@ -126,11 +121,10 @@ class MainWindow(QMainWindow):
         self.video_info_label.setWordWrap(True)
         layout.addWidget(self.video_info_label)
 
-        self.video_preview_label = QLabel("Preview")
-        self.video_preview_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.video_preview_label.setMinimumSize(420, 240)
-        self.video_preview_label.setStyleSheet("border: 1px solid #777; background: #111; color: #ccc;")
-        layout.addWidget(self.video_preview_label, 1)
+        self.video_widget = QVideoWidget()
+        self.video_widget.setMinimumSize(420, 240)
+        self.video_widget.setStyleSheet("border: 1px solid #777; background: #111;")
+        layout.addWidget(self.video_widget, 1)
 
         self.timeline_slider = QSlider(Qt.Orientation.Horizontal)
         self.timeline_slider.setRange(0, 0)
@@ -148,6 +142,15 @@ class MainWindow(QMainWindow):
         layout.addLayout(controls_row)
 
         return group
+
+    def _setup_media_player(self) -> None:
+        self.media_player = QMediaPlayer(self)
+        self.audio_output = QAudioOutput(self)
+        # Превью в приложении не требует звука, отключаем его по умолчанию.
+        self.audio_output.setVolume(0.0)
+        self.media_player.setAudioOutput(self.audio_output)
+        self.media_player.setVideoOutput(self.video_widget)
+        self.media_player.setLoops(QMediaPlayer.Loops.Infinite)
 
     def _build_pipeline_panel(self) -> QGroupBox:
         group = QGroupBox("Пайплайн")
@@ -251,6 +254,9 @@ class MainWindow(QMainWindow):
     def _connect_signals(self) -> None:
         self.load_video_button.clicked.connect(self._load_video)
         self.timeline_slider.valueChanged.connect(self._on_timeline_changed)
+        self.media_player.positionChanged.connect(self._on_player_position_changed)
+        self.media_player.durationChanged.connect(self._on_player_duration_changed)
+        self.media_player.playbackStateChanged.connect(self._on_playback_state_changed)
 
         self.play_button.clicked.connect(self._play_video)
         self.pause_button.clicked.connect(self._pause_video)
@@ -299,7 +305,8 @@ class MainWindow(QMainWindow):
         max_position = max(0, int(metadata.duration_sec * 1000))
         self.timeline_slider.setRange(0, max_position)
         self.timeline_slider.setValue(0)
-        self._render_preview_at(0.0)
+        self.media_player.setSource(QUrl.fromLocalFile(str(video_path.resolve())))
+        self.media_player.setPosition(0)
 
         self.atlas_preview_label.setPixmap(QPixmap())
         self._set_status(f"Видео загружено: {video_path.name}")
@@ -317,41 +324,34 @@ class MainWindow(QMainWindow):
 
     @Slot(int)
     def _on_timeline_changed(self, value: int) -> None:
-        if self.state.video_path is None:
+        if self.state.video_path is None or self._syncing_timeline:
             return
-        # Во время проигрывания обновляем превью сразу, иначе debounce-таймер не успевает сработать.
-        if self._is_playing:
-            self.preview_timer.stop()
-            self._render_preview_at(value / 1000.0)
+        if self.media_player.source().isEmpty():
             return
-        self.preview_timer.start()
+        self.media_player.setPosition(value)
 
-    def _render_preview_for_slider(self) -> None:
-        timestamp = self.timeline_slider.value() / 1000.0
-        self._render_preview_at(timestamp)
+    @Slot(int)
+    def _on_player_position_changed(self, position_ms: int) -> None:
+        clamped_position = max(self.timeline_slider.minimum(), min(self.timeline_slider.maximum(), position_ms))
+        self._syncing_timeline = True
+        blocker = QSignalBlocker(self.timeline_slider)
+        self.timeline_slider.setValue(clamped_position)
+        del blocker
+        self._syncing_timeline = False
 
-    def _render_preview_at(self, timestamp_sec: float) -> None:
-        if self.state.video_path is None:
+    @Slot(int)
+    def _on_player_duration_changed(self, duration_ms: int) -> None:
+        if self.state.video_meta is None:
             return
+        fallback_duration_ms = int(self.state.video_meta.duration_sec * 1000)
+        max_position = max(0, duration_ms, fallback_duration_ms)
+        blocker = QSignalBlocker(self.timeline_slider)
+        self.timeline_slider.setRange(0, max_position)
+        del blocker
 
-        preview_path = self.state.preview_dir / "current_preview.png"
-        cmd = [
-            self.video_service.ffmpeg_bin,
-            "-y",
-            "-ss",
-            f"{timestamp_sec:.6f}",
-            "-i",
-            str(self.state.video_path),
-            "-frames:v",
-            "1",
-            "-loglevel",
-            "error",
-            str(preview_path),
-        ]
-        completed = subprocess.run(cmd, capture_output=True, text=True, check=False)
-        if completed.returncode != 0 or not preview_path.exists():
-            return
-        self._set_preview_image(self.video_preview_label, preview_path)
+    @Slot(QMediaPlayer.PlaybackState)
+    def _on_playback_state_changed(self, state: QMediaPlayer.PlaybackState) -> None:
+        self._is_playing = state == QMediaPlayer.PlaybackState.PlayingState
 
     def _set_preview_image(self, target: QLabel, image_path: Path) -> None:
         pixmap = QPixmap(str(image_path))
@@ -368,36 +368,24 @@ class MainWindow(QMainWindow):
         if self.state.video_meta is None or self._busy:
             return
         if self.timeline_slider.value() >= self.timeline_slider.maximum():
-            self.timeline_slider.setValue(self.timeline_slider.minimum())
-        self._is_playing = True
-        self.preview_timer.stop()
-        self.playback_timer.start(self._frame_step_ms())
+            self.media_player.setPosition(self.timeline_slider.minimum())
+        self.media_player.play()
 
     def _pause_video(self) -> None:
-        self._is_playing = False
-        self.playback_timer.stop()
+        self.media_player.pause()
 
     def _frame_step_ms(self) -> int:
         if self.state.video_meta is None or self.state.video_meta.fps <= 0:
             return 40
         return max(1, int(round(1000.0 / self.state.video_meta.fps)))
 
-    def _on_playback_tick(self) -> None:
-        if not self._is_playing:
-            return
-        min_value = self.timeline_slider.minimum()
-        max_value = self.timeline_slider.maximum()
-        next_value = self.timeline_slider.value() + self._frame_step_ms()
-        # Зацикливаем воспроизведение, чтобы Play всегда продолжал проигрывать видео.
-        if next_value > max_value:
-            next_value = min_value
-        self.timeline_slider.setValue(next_value)
-
     def _prev_frame(self) -> None:
-        self.timeline_slider.setValue(max(self.timeline_slider.minimum(), self.timeline_slider.value() - self._frame_step_ms()))
+        position = self.media_player.position() - self._frame_step_ms()
+        self.media_player.setPosition(max(self.timeline_slider.minimum(), position))
 
     def _next_frame(self) -> None:
-        self.timeline_slider.setValue(min(self.timeline_slider.maximum(), self.timeline_slider.value() + self._frame_step_ms()))
+        position = self.media_player.position() + self._frame_step_ms()
+        self.media_player.setPosition(min(self.timeline_slider.maximum(), position))
 
     def _update_sampling_mode_ui(self) -> None:
         mode = self._current_extract_mode()
@@ -705,8 +693,7 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802
         self._is_closing = True
         self._pause_video()
-        self.preview_timer.stop()
-        self.playback_timer.stop()
+        self.media_player.stop()
         self._auto_remove_pending = False
         self.thread_pool.waitForDone(5000)
         self._active_workers.clear()
