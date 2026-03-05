@@ -66,7 +66,7 @@ def test_frame_size_dropdowns_use_fixed_values() -> None:
     window.close()
 
 
-def test_extract_task_resizes_frames_to_selected_size(tmp_path: Path) -> None:
+def test_extract_task_keeps_original_frame_size(tmp_path: Path) -> None:
     app = QApplication.instance() or QApplication([])
     window = MainWindow()
 
@@ -90,7 +90,6 @@ def test_extract_task_resizes_frames_to_selected_size(tmp_path: Path) -> None:
     extracted = window._extract_frames_task(
         video_path=tmp_path / "input.mp4",
         extraction_params=window._collect_extraction_params(),
-        atlas_params=window._collect_atlas_params(),
         frames_dir=out_dir,
         progress_cb=lambda _value, _message: None,
     )
@@ -98,7 +97,7 @@ def test_extract_task_resizes_frames_to_selected_size(tmp_path: Path) -> None:
     assert len(extracted) == 2
     for frame_path in extracted:
         with Image.open(frame_path) as frame_image:
-            assert frame_image.size == (64, 32)
+            assert frame_image.size == (120, 90)
             assert frame_image.mode == "RGBA"
 
     window.close()

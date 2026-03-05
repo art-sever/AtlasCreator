@@ -10,7 +10,8 @@ class ToolingService:
     def __init__(self, ffmpeg_bin: str = "ffmpeg", ffprobe_bin: str = "ffprobe") -> None:
         self.ffmpeg_bin = ffmpeg_bin
         self.ffprobe_bin = ffprobe_bin
-        self._rembg_default_model_name = "isnet-anime"
+        # По умолчанию используем birefnet-general для более устойчивого выделения объекта.
+        self._rembg_default_model_name = "birefnet-general"
         self._rembg_session: Any | None = None
         self._rembg_session_model_name: str | None = None
 

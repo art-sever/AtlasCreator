@@ -42,13 +42,17 @@ class BackgroundService:
             with frame_path.open("rb") as src_file:
                 source_bytes = src_file.read()
 
-            # По умолчанию используем режим без alpha matting с постобработкой маски.
+            # По умолчанию используем CLI-совместимый режим:
+            # alpha matting OFF и post-process mask OFF.
             try:
                 result_bytes = remove_fn(
                     source_bytes,
                     session=rembg_session,
                     alpha_matting=False,
-                    post_process_mask=True,
+                    alpha_matting_foreground_threshold=removal_params.fg_threshold,
+                    alpha_matting_background_threshold=removal_params.bg_threshold,
+                    alpha_matting_erode_size=removal_params.erode_size,
+                    post_process_mask=False,
                 )
             except Exception as exc:  # noqa: BLE001
                 raise RuntimeError(f"Ошибка rembg при обработке {frame_path.name}: {exc}") from exc

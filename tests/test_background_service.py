@@ -26,7 +26,7 @@ class _FakeToolingService(ToolingService):
         return self.session
 
 
-def test_remove_background_batch_uses_default_mask_post_processing(tmp_path: Path) -> None:
+def test_remove_background_batch_uses_cli_compatible_defaults(tmp_path: Path) -> None:
     source_dir = tmp_path / "frames"
     cut_dir = tmp_path / "cut"
     source_dir.mkdir(parents=True, exist_ok=True)
@@ -46,7 +46,10 @@ def test_remove_background_batch_uses_default_mask_post_processing(tmp_path: Pat
     kwargs = fake_tooling.calls[0]["kwargs"]
     assert kwargs["session"] is fake_tooling.session
     assert kwargs["alpha_matting"] is False
-    assert kwargs["post_process_mask"] is True
+    assert kwargs["alpha_matting_foreground_threshold"] == 230
+    assert kwargs["alpha_matting_background_threshold"] == 20
+    assert kwargs["alpha_matting_erode_size"] == 5
+    assert kwargs["post_process_mask"] is False
 
 
 def test_background_removal_params_erode_size_must_be_non_negative() -> None:

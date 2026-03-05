@@ -31,8 +31,8 @@
   - извлечение кадров по FPS
   - извлечение ровно `N` кадров по равномерным timestamp от начала до конца таймлайна
 - `src/services/background_service.py`:
-  - batch-обработка кадров через `rembg.remove` с сессией модели `isnet-anime` по умолчанию
-  - настройки удаления по умолчанию: `alpha_matting=False`, `post_process_mask=True`
+  - batch-обработка кадров через `rembg.remove` с сессией модели `birefnet-general` по умолчанию
+  - настройки удаления фона: `alpha_matting=False`, `post_process_mask=False`
   - параметры `FG Threshold`, `BG Threshold`, `Erode Size` валидируются на уровне модели и UI
   - нормализация выхода в `RGBA PNG`
 - `src/services/image_service.py`:
@@ -43,7 +43,7 @@
   - фоновые задачи (`QRunnable`) и прогресс
 - `src/ui/main_window.py`:
   - layout, привязка кнопок, пайплайн действий, обработка ошибок
-  - выбор `Frame Width/Frame Height` в блоке пайплайна перед `Extract Frames` с применением размера сразу после извлечения
+  - выбор `Frame Width/Frame Height` в блоке пайплайна; размер применяется на шаге `Build SpriteSheet`
   - единый выбор фона предпросмотра `Preview Background` (`Black/White/Green`) для статичного spritesheet и окна анимации
   - запуск отдельного окна предпросмотра анимации из готового spritesheet
 - `src/ui/spritesheet_preview_dialog.py`:
@@ -70,7 +70,7 @@
 3. Выбор размера кадра перед извлечением:
    - `Frame Width`, `Frame Height` (фиксированный список: `16, 32, 64, 128, 256, 512, 1024`)
 4. `Extract Frames`
-   - после извлечения кадры сразу приводятся к выбранному `Frame Width/Frame Height`
+   - извлекаются исходные кадры видео без ресайза
 5. Автопродолжение пайплайна после извлечения:
    - если `Auto remove background after extraction` выключен, сразу запускается `Build SpriteSheet`
    - если `Auto remove background after extraction` включен, сначала запускается `Remove Background`, затем автоматически запускается `Build SpriteSheet` на кадрах из `temp/cut`
@@ -79,10 +79,10 @@
      - `FG Threshold` (по умолчанию `240`)
      - `BG Threshold` (по умолчанию `10`)
      - `Erode Size` (по умолчанию `10`)
-   - в текущем режиме удаления фона используются настройки по умолчанию: `model=isnet-anime`, `alpha_matting=OFF`, `post_process_mask=ON`
+   - в текущем режиме удаления фона используются настройки: `model=birefnet-general`, `alpha_matting=OFF`, `post_process_mask=OFF`
 7. Ввод atlas-параметров (могут быть изменены перед ручным повторным запуском):
    - `Columns`, `Rows`, `Resize Mode`
-   - `Frame Width` и `Frame Height` задаются в блоке извлечения и используются также для сборки atlas
+   - `Frame Width` и `Frame Height` задаются в блоке пайплайна и применяются на этапе сборки atlas
 8. `Build SpriteSheet` (кнопка доступна и для ручного повторного запуска)
 9. `Video Preview` (опционально)
    - открывает отдельное окно и проигрывает кадры из готового spritesheet как анимацию

@@ -566,7 +566,6 @@ class MainWindow(QMainWindow):
         try:
             self.tooling_service.ensure_ffmpeg_tools()
             extraction_params = self._collect_extraction_params()
-            atlas_params = self._collect_atlas_params()
         except Exception as exc:  # noqa: BLE001
             self._show_error(str(exc))
             return
@@ -581,7 +580,6 @@ class MainWindow(QMainWindow):
             self._extract_frames_task,
             self.state.video_path,
             extraction_params,
-            atlas_params,
             self.state.frames_dir,
         )
         worker.signals.progress.connect(self._on_worker_progress, Qt.ConnectionType.QueuedConnection)
@@ -596,7 +594,6 @@ class MainWindow(QMainWindow):
         self,
         video_path: Path,
         extraction_params: ExtractionParams,
-        atlas_params: AtlasParams,
         frames_dir: Path,
         progress_cb,
     ) -> list[Path]:
@@ -604,26 +601,9 @@ class MainWindow(QMainWindow):
             video_path,
             extraction_params,
             frames_dir,
-            progress_cb=lambda value, message: progress_cb(int(value * 0.65), message),
+            progress_cb=progress_cb,
         )
-
-        # На шаге extract сразу приводим кадры к выбранному размеру, чтобы дальше пайплайн работал с целевым форматом.
-        prepared_frames = self.image_service.prepare_frames(
-            raw_frames,
-            width=atlas_params.frame_width,
-            height=atlas_params.frame_height,
-            mode=atlas_params.resize_mode,
-            progress_cb=lambda value, _msg: progress_cb(
-                65 + int(value * 0.35),
-                "Подготовка размера кадров",
-            ),
-        )
-
-        for frame_path, prepared_frame in zip(raw_frames, prepared_frames):
-            prepared_frame.save(frame_path, "PNG")
-            prepared_frame.close()
-
-        progress_cb(100, "Извлечение и ресайз кадров завершены")
+        progress_cb(100, "Извлечение кадров завершено")
         return raw_frames
 
     def _on_extract_completed(self, frames: list[Path]) -> None:
