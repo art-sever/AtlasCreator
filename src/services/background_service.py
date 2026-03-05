@@ -5,6 +5,7 @@ from pathlib import Path
 
 from PIL import Image
 
+from src.models import BackgroundRemovalParams
 from src.services.tooling_service import ToolingService
 
 ProgressCallback = Callable[[int, str], None]
@@ -18,12 +19,15 @@ class BackgroundService:
         self,
         input_frames: list[Path],
         out_dir: Path,
+        params: BackgroundRemovalParams | None = None,
         progress_cb: ProgressCallback | None = None,
     ) -> list[Path]:
         if not input_frames:
             raise ValueError("Нет кадров для удаления фона")
 
         remove_fn = self.tooling_service.ensure_rembg_remove()
+        removal_params = params or BackgroundRemovalParams()
+        removal_params.validate()
         callback = progress_cb or (lambda _value, _message: None)
 
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -39,7 +43,13 @@ class BackgroundService:
 
             # rembg возвращает PNG-байты с альфаканалом, затем нормализуем формат через Pillow.
             try:
-                result_bytes = remove_fn(source_bytes)
+                result_bytes = remove_fn(
+                    source_bytes,
+                    alpha_matting=True,
+                    alpha_matting_foreground_threshold=removal_params.fg_threshold,
+                    alpha_matting_background_threshold=removal_params.bg_threshold,
+                    alpha_matting_erode_size=removal_params.erode_size,
+                )
             except Exception as exc:  # noqa: BLE001
                 raise RuntimeError(f"Ошибка rembg при обработке {frame_path.name}: {exc}") from exc
 

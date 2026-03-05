@@ -28,7 +28,7 @@ from PySide6.QtWidgets import (
 )
 
 from src.app_state import AppState
-from src.models import AtlasParams, ExtractMode, ExtractionParams, ResizeMode, VideoMeta
+from src.models import AtlasParams, BackgroundRemovalParams, ExtractMode, ExtractionParams, ResizeMode, VideoMeta
 from src.services.atlas_service import AtlasService
 from src.services.background_service import BackgroundService
 from src.services.image_service import ImageService
@@ -66,6 +66,7 @@ class MainWindow(QMainWindow):
         self._active_workers: set[TaskWorker] = set()
         self._busy = False
         self._auto_remove_pending = False
+        self._auto_build_pending = False
         self._is_playing = False
         self._syncing_timeline = False
         self._is_closing = False
@@ -172,6 +173,8 @@ class MainWindow(QMainWindow):
         self.sampling_mode_combo = QComboBox()
         self.sampling_mode_combo.addItem("Target FPS", ExtractMode.TARGET_FPS)
         self.sampling_mode_combo.addItem("Exact Frame Count", ExtractMode.EXACT_COUNT)
+        # По умолчанию используем точное количество кадров для предсказуемой выборки.
+        self.sampling_mode_combo.setCurrentIndex(1)
         layout.addWidget(QLabel("Режим выборки кадров"))
         layout.addWidget(self.sampling_mode_combo)
 
@@ -194,10 +197,42 @@ class MainWindow(QMainWindow):
         self.extract_button = QPushButton("Extract Frames")
         self.remove_bg_button = QPushButton("Remove Background")
         self.auto_remove_checkbox = QCheckBox("Auto remove background after extraction")
+        self.fg_threshold_slider = QSlider(Qt.Orientation.Horizontal)
+        self.fg_threshold_slider.setRange(0, 255)
+        self.fg_threshold_slider.setValue(240)
+        self.fg_threshold_value_label = QLabel("240")
+
+        self.bg_threshold_slider = QSlider(Qt.Orientation.Horizontal)
+        self.bg_threshold_slider.setRange(0, 255)
+        self.bg_threshold_slider.setValue(10)
+        self.bg_threshold_value_label = QLabel("10")
+
+        self.erode_size_slider = QSlider(Qt.Orientation.Horizontal)
+        self.erode_size_slider.setRange(0, 255)
+        self.erode_size_slider.setValue(10)
+        self.erode_size_value_label = QLabel("10")
 
         layout.addWidget(self.extract_button)
         layout.addWidget(self.remove_bg_button)
         layout.addWidget(self.auto_remove_checkbox)
+
+        fg_row = QHBoxLayout()
+        fg_row.addWidget(QLabel("FG Threshold"))
+        fg_row.addWidget(self.fg_threshold_slider, 1)
+        fg_row.addWidget(self.fg_threshold_value_label)
+        layout.addLayout(fg_row)
+
+        bg_row = QHBoxLayout()
+        bg_row.addWidget(QLabel("BG Threshold"))
+        bg_row.addWidget(self.bg_threshold_slider, 1)
+        bg_row.addWidget(self.bg_threshold_value_label)
+        layout.addLayout(bg_row)
+
+        erode_row = QHBoxLayout()
+        erode_row.addWidget(QLabel("Erode Size"))
+        erode_row.addWidget(self.erode_size_slider, 1)
+        erode_row.addWidget(self.erode_size_value_label)
+        layout.addLayout(erode_row)
         layout.addStretch(1)
 
         return group
@@ -301,6 +336,21 @@ class MainWindow(QMainWindow):
         self.frame_width_combo.currentIndexChanged.connect(self._update_atlas_params_label)
         self.frame_height_combo.currentIndexChanged.connect(self._update_atlas_params_label)
         self.resize_mode_combo.currentIndexChanged.connect(self._update_atlas_params_label)
+        self.fg_threshold_slider.valueChanged.connect(self._on_fg_threshold_changed)
+        self.bg_threshold_slider.valueChanged.connect(self._on_bg_threshold_changed)
+        self.erode_size_slider.valueChanged.connect(self._on_erode_size_changed)
+
+    @Slot(int)
+    def _on_fg_threshold_changed(self, value: int) -> None:
+        self.fg_threshold_value_label.setText(str(value))
+
+    @Slot(int)
+    def _on_bg_threshold_changed(self, value: int) -> None:
+        self.bg_threshold_value_label.setText(str(value))
+
+    @Slot(int)
+    def _on_erode_size_changed(self, value: int) -> None:
+        self.erode_size_value_label.setText(str(value))
 
     @Slot()
     def _load_video(self) -> None:
@@ -477,6 +527,15 @@ class MainWindow(QMainWindow):
         params.validate()
         return params
 
+    def _collect_background_removal_params(self) -> BackgroundRemovalParams:
+        params = BackgroundRemovalParams(
+            fg_threshold=int(self.fg_threshold_slider.value()),
+            bg_threshold=int(self.bg_threshold_slider.value()),
+            erode_size=int(self.erode_size_slider.value()),
+        )
+        params.validate()
+        return params
+
     def _current_frame_size(self, combo: QComboBox) -> int:
         data = combo.currentData()
         if isinstance(data, int):
@@ -512,6 +571,8 @@ class MainWindow(QMainWindow):
 
         self.state.prepare_temp_dirs(clean=True)
         self.state.reset_pipeline_outputs()
+        self._auto_remove_pending = False
+        self._auto_build_pending = False
         self._refresh_action_states()
 
         worker = TaskWorker(self.video_service.extract_frames, self.state.video_path, params, self.state.frames_dir)
@@ -531,6 +592,8 @@ class MainWindow(QMainWindow):
         self._reset_spritesheet_preview_state(close_dialog=True)
         self._set_status(f"Извлечено кадров: {len(self.state.extracted_frames)}")
 
+        self._auto_build_pending = bool(self.state.extracted_frames)
+
         if self.auto_remove_checkbox.isChecked() and self.state.extracted_frames:
             self._auto_remove_pending = True
 
@@ -544,11 +607,17 @@ class MainWindow(QMainWindow):
             return
         try:
             self.tooling_service.ensure_rembg_remove()
+            background_params = self._collect_background_removal_params()
         except Exception as exc:  # noqa: BLE001
             self._show_error(str(exc))
             return
 
-        worker = TaskWorker(self.background_service.remove_background_batch, self.state.extracted_frames, self.state.cut_dir)
+        worker = TaskWorker(
+            self.background_service.remove_background_batch,
+            self.state.extracted_frames,
+            self.state.cut_dir,
+            background_params,
+        )
         worker.signals.progress.connect(self._on_worker_progress, Qt.ConnectionType.QueuedConnection)
         worker.signals.result.connect(self._on_remove_background_completed, Qt.ConnectionType.QueuedConnection)
         worker.signals.error.connect(
@@ -753,9 +822,15 @@ class MainWindow(QMainWindow):
         if self._is_closing:
             return
         self._set_busy(False)
+        # После извлечения автоматически запускаем следующий шаг пайплайна:
+        # сначала удаление фона (если включено), затем сборку spritesheet.
         if self._auto_remove_pending:
             self._auto_remove_pending = False
             self._remove_background()
+            return
+        if self._auto_build_pending:
+            self._auto_build_pending = False
+            self._build_spritesheet()
 
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802
         self._is_closing = True
@@ -763,6 +838,7 @@ class MainWindow(QMainWindow):
         self._pause_video()
         self.media_player.stop()
         self._auto_remove_pending = False
+        self._auto_build_pending = False
         self.thread_pool.waitForDone(5000)
         self._active_workers.clear()
         super().closeEvent(event)

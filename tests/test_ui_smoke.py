@@ -11,6 +11,7 @@ from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from src.models import AtlasParams, ResizeMode  # noqa: E402
 from src.ui.main_window import MainWindow  # noqa: E402
+from src.ui.workers import TaskWorker  # noqa: E402
 
 
 def test_main_window_smoke() -> None:
@@ -34,6 +35,16 @@ def test_exact_count_mode_switches_input_field() -> None:
     assert exact_index >= 0
     window.sampling_mode_combo.setCurrentIndex(exact_index)
 
+    assert not window.count_spin.isHidden()
+    assert window.fps_spin.isHidden()
+    window.close()
+
+
+def test_exact_count_mode_is_default() -> None:
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow()
+
+    assert window.sampling_mode_combo.currentText() == "Exact Frame Count"
     assert not window.count_spin.isHidden()
     assert window.fps_spin.isHidden()
     window.close()
@@ -72,6 +83,31 @@ def test_preview_background_selector_has_expected_options() -> None:
     window.close()
 
 
+def test_background_removal_controls_have_defaults() -> None:
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow()
+
+    assert window.fg_threshold_slider.value() == 240
+    assert window.bg_threshold_slider.value() == 10
+    assert window.erode_size_slider.value() == 10
+    assert window.fg_threshold_value_label.text() == "240"
+    assert window.bg_threshold_value_label.text() == "10"
+    assert window.erode_size_value_label.text() == "10"
+
+    window.fg_threshold_slider.setValue(200)
+    window.bg_threshold_slider.setValue(30)
+    window.erode_size_slider.setValue(7)
+    assert window.fg_threshold_value_label.text() == "200"
+    assert window.bg_threshold_value_label.text() == "30"
+    assert window.erode_size_value_label.text() == "7"
+
+    params = window._collect_background_removal_params()
+    assert params.fg_threshold == 200
+    assert params.bg_threshold == 30
+    assert params.erode_size == 7
+    window.close()
+
+
 def test_preview_background_is_shared_with_animation_dialog(tmp_path: Path) -> None:
     app = QApplication.instance() or QApplication([])
     window = MainWindow()
@@ -102,4 +138,54 @@ def test_preview_background_is_shared_with_animation_dialog(tmp_path: Path) -> N
     window.preview_background_combo.setCurrentText("Green")
     assert "background: #00ff00;" in window.atlas_preview_label.styleSheet()
     assert "background: #00ff00;" in dialog.preview_label.styleSheet()
+    window.close()
+
+
+def test_extract_auto_triggers_build_spritesheet() -> None:
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow()
+
+    window.auto_remove_checkbox.setChecked(False)
+    window._on_extract_completed([Path("frame_000001.png")])
+
+    calls: list[str] = []
+
+    def _fake_build() -> None:
+        calls.append("build")
+
+    window._build_spritesheet = _fake_build  # type: ignore[method-assign]
+    worker = TaskWorker(lambda progress_cb: None)
+    window._on_worker_finished(worker)
+
+    assert calls == ["build"]
+    assert window._auto_build_pending is False
+    window.close()
+
+
+def test_extract_auto_remove_then_auto_build_spritesheet() -> None:
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow()
+
+    window.auto_remove_checkbox.setChecked(True)
+    window._on_extract_completed([Path("frame_000001.png")])
+
+    calls: list[str] = []
+
+    def _fake_remove() -> None:
+        calls.append("remove")
+
+    def _fake_build() -> None:
+        calls.append("build")
+
+    window._remove_background = _fake_remove  # type: ignore[method-assign]
+    window._build_spritesheet = _fake_build  # type: ignore[method-assign]
+
+    first_worker = TaskWorker(lambda progress_cb: None)
+    second_worker = TaskWorker(lambda progress_cb: None)
+    window._on_worker_finished(first_worker)
+    window._on_worker_finished(second_worker)
+
+    assert calls == ["remove", "build"]
+    assert window._auto_remove_pending is False
+    assert window._auto_build_pending is False
     window.close()

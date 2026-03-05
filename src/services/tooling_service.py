@@ -16,7 +16,7 @@ class ToolingService:
         if shutil.which(self.ffprobe_bin) is None:
             raise RuntimeError("FFprobe не найден. Установите ffprobe и добавьте его в PATH")
 
-    def ensure_rembg_remove(self) -> Callable[[bytes], bytes]:
+    def ensure_rembg_remove(self) -> Callable[..., bytes]:
         try:
             rembg_module = importlib.import_module("rembg")
         except ModuleNotFoundError as exc:

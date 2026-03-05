@@ -45,6 +45,21 @@ class ExtractionParams:
 
 
 @dataclass
+class BackgroundRemovalParams:
+    fg_threshold: int = 240
+    bg_threshold: int = 10
+    erode_size: int = 10
+
+    def validate(self) -> None:
+        if not 0 <= self.fg_threshold <= 255:
+            raise ValueError("FG Threshold должен быть в диапазоне 0..255")
+        if not 0 <= self.bg_threshold <= 255:
+            raise ValueError("BG Threshold должен быть в диапазоне 0..255")
+        if self.erode_size < 0:
+            raise ValueError("Erode Size должен быть больше или равен 0")
+
+
+@dataclass
 class AtlasParams:
     columns: int
     rows: int

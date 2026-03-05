@@ -22,7 +22,7 @@
 ## 3. Структура модулей
 
 - `src/models.py`:
-  - `VideoMeta`, `ExtractionParams`, `AtlasParams`
+  - `VideoMeta`, `ExtractionParams`, `BackgroundRemovalParams`, `AtlasParams`
   - `ExtractMode`, `ResizeMode`
 - `src/app_state.py`:
   - runtime-состояние UI и путей `temp/`
@@ -31,7 +31,8 @@
   - извлечение кадров по FPS
   - извлечение ровно `N` кадров по равномерным timestamp от начала до конца таймлайна
 - `src/services/background_service.py`:
-  - batch-обработка кадров через `rembg.remove`
+  - batch-обработка кадров через `rembg.remove` с `alpha_matting`
+  - настраиваемые параметры: `FG Threshold`, `BG Threshold`, `Erode Size`
   - нормализация выхода в `RGBA PNG`
 - `src/services/image_service.py`:
   - режимы `FIT`, `CROP_CENTER`, `STRETCH`
@@ -62,20 +63,27 @@
    - `Play` запускает нативный предпросмотр через `QMediaPlayer` в зацикленном режиме (после последнего кадра воспроизведение продолжается с начала)
 2. Выбор режима извлечения:
    - `Target FPS`
-   - `Exact Frame Count`
+   - `Exact Frame Count` (по умолчанию)
    - В режиме `Exact Frame Count` используется поле `Count`; в режиме `Target FPS` используется поле `FPS`
 3. `Extract Frames`
-4. (Опционально автоматически) `Remove Background`
-5. Ввод atlas-параметров:
+4. Автопродолжение пайплайна после извлечения:
+   - если `Auto remove background after extraction` выключен, сразу запускается `Build SpriteSheet`
+   - если `Auto remove background after extraction` включен, сначала запускается `Remove Background`, затем автоматически запускается `Build SpriteSheet` на кадрах из `temp/cut`
+5. (Опционально вручную) `Remove Background`
+   - дополнительные параметры удаления фона (через ползунки):
+     - `FG Threshold` (по умолчанию `240`)
+     - `BG Threshold` (по умолчанию `10`)
+     - `Erode Size` (по умолчанию `10`)
+6. Ввод atlas-параметров (задаются до `Extract Frames` и могут быть изменены перед ручным повторным запуском):
    - `Columns`, `Rows`, `Frame Width`, `Frame Height`, `Resize Mode`
    - `Frame Width` и `Frame Height` выбираются из фиксированного списка: `16, 32, 64, 128, 256, 512, 1024`
-6. `Build SpriteSheet`
-7. `Video Preview` (опционально)
+7. `Build SpriteSheet` (кнопка доступна и для ручного повторного запуска)
+8. `Video Preview` (опционально)
    - открывает отдельное окно и проигрывает кадры из готового spritesheet как анимацию
-8. `Preview Background`
+9. `Preview Background`
    - единый селектор фона предпросмотра: `Black`, `White`, `Green`
    - выбранный цвет сразу применяется к `SpriteSheet Preview` и к открытому окну `Video Preview`
-9. `Export PNG`
+10. `Export PNG`
 
 ## 6. Правила валидации
 
@@ -83,6 +91,9 @@
 - `FPS > 0`
 - `Count > 0`
 - `Columns/Rows > 0`
+- `FG Threshold` в диапазоне `0..255`
+- `BG Threshold` в диапазоне `0..255`
+- `Erode Size >= 0`
 - `Frame Width` и `Frame Height` должны быть одним из значений списка: `16, 32, 64, 128, 256, 512, 1024`
 - `len(frames) <= columns * rows`
 - окно `Video Preview` доступно только после успешной сборки spritesheet
