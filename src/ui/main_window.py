@@ -40,6 +40,11 @@ from src.ui.workers import TaskWorker
 
 class MainWindow(QMainWindow):
     FRAME_SIZE_OPTIONS = (16, 32, 64, 128, 256, 512, 1024)
+    PREVIEW_BACKGROUND_OPTIONS = (
+        ("Black", "#000000", "#cccccc"),
+        ("White", "#ffffff", "#111111"),
+        ("Green", "#00ff00", "#111111"),
+    )
 
     def __init__(self) -> None:
         super().__init__()
@@ -74,6 +79,7 @@ class MainWindow(QMainWindow):
         self._connect_signals()
         self._update_sampling_mode_ui()
         self._update_atlas_params_label()
+        self._apply_preview_background()
         self._refresh_action_states()
         self._set_status("Готово. Загрузите видео")
 
@@ -203,8 +209,16 @@ class MainWindow(QMainWindow):
         self.atlas_preview_label = QLabel("SpriteSheet Preview")
         self.atlas_preview_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.atlas_preview_label.setMinimumSize(420, 240)
-        self.atlas_preview_label.setStyleSheet("border: 1px solid #777; background: #111; color: #ccc;")
+        self.atlas_preview_label.setStyleSheet("border: 1px solid #777;")
         layout.addWidget(self.atlas_preview_label, 1)
+
+        background_row = QHBoxLayout()
+        background_row.addWidget(QLabel("Preview Background"))
+        self.preview_background_combo = QComboBox()
+        for label, bg_color, text_color in self.PREVIEW_BACKGROUND_OPTIONS:
+            self.preview_background_combo.addItem(label, (bg_color, text_color))
+        background_row.addWidget(self.preview_background_combo, 1)
+        layout.addLayout(background_row)
 
         self.preview_video_button = QPushButton("Video Preview")
         layout.addWidget(self.preview_video_button)
@@ -280,6 +294,7 @@ class MainWindow(QMainWindow):
         self.build_button.clicked.connect(self._build_spritesheet)
         self.preview_video_button.clicked.connect(self._open_spritesheet_preview)
         self.export_button.clicked.connect(self._export_png)
+        self.preview_background_combo.currentIndexChanged.connect(self._on_preview_background_changed)
 
         self.columns_spin.valueChanged.connect(self._update_atlas_params_label)
         self.rows_spin.valueChanged.connect(self._update_atlas_params_label)
@@ -364,6 +379,30 @@ class MainWindow(QMainWindow):
     @Slot(QMediaPlayer.PlaybackState)
     def _on_playback_state_changed(self, state: QMediaPlayer.PlaybackState) -> None:
         self._is_playing = state == QMediaPlayer.PlaybackState.PlayingState
+
+    @Slot(int)
+    def _on_preview_background_changed(self, _index: int) -> None:
+        self._apply_preview_background()
+
+    def _current_preview_background(self) -> tuple[str, str]:
+        data = self.preview_background_combo.currentData()
+        if (
+            isinstance(data, tuple)
+            and len(data) == 2
+            and isinstance(data[0], str)
+            and isinstance(data[1], str)
+        ):
+            return data[0], data[1]
+        return "#000000", "#cccccc"
+
+    def _apply_preview_background(self) -> None:
+        # Оба предпросмотра используют единый цвет фона, чтобы пользователь видел одинаковый результат.
+        bg_color, text_color = self._current_preview_background()
+        self.atlas_preview_label.setStyleSheet(
+            f"border: 1px solid #777; background: {bg_color}; color: {text_color};"
+        )
+        if self._spritesheet_preview_dialog is not None:
+            self._spritesheet_preview_dialog.set_preview_background(bg_color, text_color)
 
     def _set_preview_image(self, target: QLabel, image_path: Path) -> None:
         pixmap = QPixmap(str(image_path))
@@ -754,11 +793,14 @@ class MainWindow(QMainWindow):
             self._spritesheet_preview_dialog.close()
             self._spritesheet_preview_dialog = None
 
+        preview_bg_color, preview_text_color = self._current_preview_background()
         dialog = SpriteSheetPreviewDialog(
             atlas_path=self.state.atlas_path,
             atlas_params=self._preview_atlas_params,
             frame_count=self._preview_frame_count,
             default_fps=self._default_spritesheet_preview_fps(),
+            preview_background_color=preview_bg_color,
+            preview_text_color=preview_text_color,
             parent=self,
         )
         dialog.finished.connect(self._on_spritesheet_preview_closed)

@@ -23,6 +23,8 @@ class SpriteSheetPreviewDialog(QDialog):
         atlas_params: AtlasParams,
         frame_count: int,
         default_fps: float,
+        preview_background_color: str,
+        preview_text_color: str,
         parent=None,
     ) -> None:
         super().__init__(parent)
@@ -32,6 +34,8 @@ class SpriteSheetPreviewDialog(QDialog):
         self._atlas_params = atlas_params
         self._frame_count = max(1, min(frame_count, atlas_params.capacity))
         self._frame_index = 0
+        self._preview_background_color = preview_background_color
+        self._preview_text_color = preview_text_color
         self._sheet_pixmap = QPixmap(str(atlas_path))
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._next_frame_auto)
@@ -46,7 +50,7 @@ class SpriteSheetPreviewDialog(QDialog):
         self.preview_label = QLabel("Preview")
         self.preview_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.preview_label.setMinimumSize(640, 360)
-        self.preview_label.setStyleSheet("border: 1px solid #777; background: #111; color: #ccc;")
+        self._apply_preview_background_style()
         root_layout.addWidget(self.preview_label, 1)
 
         self.frame_info_label = QLabel("")
@@ -77,6 +81,17 @@ class SpriteSheetPreviewDialog(QDialog):
         self.prev_frame_button.clicked.connect(self._prev_frame)
         self.next_frame_button.clicked.connect(self._next_frame)
         self.fps_spin.valueChanged.connect(self._update_timer_interval)
+
+    def set_preview_background(self, background_color: str, text_color: str) -> None:
+        self._preview_background_color = background_color
+        self._preview_text_color = text_color
+        self._apply_preview_background_style()
+
+    def _apply_preview_background_style(self) -> None:
+        # Фон для анимации синхронизируется с фоном в основном окне предпросмотра spritesheet.
+        self.preview_label.setStyleSheet(
+            f"border: 1px solid #777; background: {self._preview_background_color}; color: {self._preview_text_color};"
+        )
 
     def resizeEvent(self, event) -> None:  # noqa: N802
         super().resizeEvent(event)

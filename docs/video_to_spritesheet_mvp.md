@@ -41,9 +41,11 @@
   - фоновые задачи (`QRunnable`) и прогресс
 - `src/ui/main_window.py`:
   - layout, привязка кнопок, пайплайн действий, обработка ошибок
+  - единый выбор фона предпросмотра `Preview Background` (`Black/White/Green`) для статичного spritesheet и окна анимации
   - запуск отдельного окна предпросмотра анимации из готового spritesheet
 - `src/ui/spritesheet_preview_dialog.py`:
   - покадровый предпросмотр анимации из `spritesheet.png` с `Play/Pause`, `Prev/Next` и выбором FPS
+  - принимает и применяет фон из основного окна, чтобы цвет в обоих предпросмотрах совпадал
 
 ## 4. Временные директории
 
@@ -70,7 +72,10 @@
 6. `Build SpriteSheet`
 7. `Video Preview` (опционально)
    - открывает отдельное окно и проигрывает кадры из готового spritesheet как анимацию
-8. `Export PNG`
+8. `Preview Background`
+   - единый селектор фона предпросмотра: `Black`, `White`, `Green`
+   - выбранный цвет сразу применяется к `SpriteSheet Preview` и к открытому окну `Video Preview`
+9. `Export PNG`
 
 ## 6. Правила валидации
 
