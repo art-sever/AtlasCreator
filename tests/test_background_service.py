@@ -13,6 +13,7 @@ class _FakeToolingService(ToolingService):
         super().__init__()
         self.result_bytes = result_bytes
         self.calls: list[dict[str, object]] = []
+        self.session = object()
 
     def ensure_rembg_remove(self):
         def _remove(source_bytes: bytes, **kwargs):
@@ -21,8 +22,11 @@ class _FakeToolingService(ToolingService):
 
         return _remove
 
+    def ensure_rembg_session(self, model_name: str | None = None):
+        return self.session
 
-def test_remove_background_batch_uses_non_alpha_matting_with_post_process(tmp_path: Path) -> None:
+
+def test_remove_background_batch_uses_default_mask_post_processing(tmp_path: Path) -> None:
     source_dir = tmp_path / "frames"
     cut_dir = tmp_path / "cut"
     source_dir.mkdir(parents=True, exist_ok=True)
@@ -40,6 +44,7 @@ def test_remove_background_batch_uses_non_alpha_matting_with_post_process(tmp_pa
     assert len(output_files) == 1
     assert len(fake_tooling.calls) == 1
     kwargs = fake_tooling.calls[0]["kwargs"]
+    assert kwargs["session"] is fake_tooling.session
     assert kwargs["alpha_matting"] is False
     assert kwargs["post_process_mask"] is True
 

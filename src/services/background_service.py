@@ -26,6 +26,7 @@ class BackgroundService:
             raise ValueError("Нет кадров для удаления фона")
 
         remove_fn = self.tooling_service.ensure_rembg_remove()
+        rembg_session = self.tooling_service.ensure_rembg_session()
         removal_params = params or BackgroundRemovalParams()
         removal_params.validate()
         callback = progress_cb or (lambda _value, _message: None)
@@ -41,10 +42,11 @@ class BackgroundService:
             with frame_path.open("rb") as src_file:
                 source_bytes = src_file.read()
 
-            # Для спрайтов используем базовую маску без alpha matting и включаем post-process очистку.
+            # По умолчанию используем режим без alpha matting с постобработкой маски.
             try:
                 result_bytes = remove_fn(
                     source_bytes,
+                    session=rembg_session,
                     alpha_matting=False,
                     post_process_mask=True,
                 )

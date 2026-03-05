@@ -31,9 +31,9 @@
   - извлечение кадров по FPS
   - извлечение ровно `N` кадров по равномерным timestamp от начала до конца таймлайна
 - `src/services/background_service.py`:
-  - batch-обработка кадров через `rembg.remove` без `alpha_matting` (`alpha_matting=False`)
-  - включена постобработка маски `post_process_mask=True` для очистки краев
-  - параметры `FG Threshold`, `BG Threshold`, `Erode Size` валидируются на уровне модели, но не участвуют в текущем режиме удаления фона
+  - batch-обработка кадров через `rembg.remove` с сессией модели `isnet-anime` по умолчанию
+  - настройки удаления по умолчанию: `alpha_matting=False`, `post_process_mask=True`
+  - параметры `FG Threshold`, `BG Threshold`, `Erode Size` валидируются на уровне модели и UI
   - нормализация выхода в `RGBA PNG`
 - `src/services/image_service.py`:
   - режимы `FIT`, `CROP_CENTER`, `STRETCH`
@@ -79,7 +79,7 @@
      - `FG Threshold` (по умолчанию `240`)
      - `BG Threshold` (по умолчанию `10`)
      - `Erode Size` (по умолчанию `10`)
-   - в текущем режиме сервис использует обычную маску без alpha matting и включает `post_process_mask` для очистки артефактов по краю
+   - в текущем режиме удаления фона используются настройки по умолчанию: `model=isnet-anime`, `alpha_matting=OFF`, `post_process_mask=ON`
 7. Ввод atlas-параметров (могут быть изменены перед ручным повторным запуском):
    - `Columns`, `Rows`, `Resize Mode`
    - `Frame Width` и `Frame Height` задаются в блоке извлечения и используются также для сборки atlas
@@ -148,6 +148,15 @@ python -m src.main
 ```bash
 pip install "rembg[cpu]"
 ```
+
+### Запуск через ярлык
+
+После первичной настройки окружения приложение можно запускать двойным кликом по файлу `Launch AtlasCreator.command` в корне проекта.
+Этот ярлык:
+
+- переходит в каталог проекта
+- активирует `.venv` (если существует)
+- запускает приложение через `atlas-creator` или `python3 -m src.main` (фолбэк)
 
 ## 10. Тесты
 
