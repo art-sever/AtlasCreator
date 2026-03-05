@@ -31,8 +31,9 @@
   - извлечение кадров по FPS
   - извлечение ровно `N` кадров по равномерным timestamp от начала до конца таймлайна
 - `src/services/background_service.py`:
-  - batch-обработка кадров через `rembg.remove` с `alpha_matting`
-  - настраиваемые параметры: `FG Threshold`, `BG Threshold`, `Erode Size`
+  - batch-обработка кадров через `rembg.remove` без `alpha_matting` (`alpha_matting=False`)
+  - включена постобработка маски `post_process_mask=True` для очистки краев
+  - параметры `FG Threshold`, `BG Threshold`, `Erode Size` валидируются на уровне модели, но не участвуют в текущем режиме удаления фона
   - нормализация выхода в `RGBA PNG`
 - `src/services/image_service.py`:
   - режимы `FIT`, `CROP_CENTER`, `STRETCH`
@@ -42,6 +43,7 @@
   - фоновые задачи (`QRunnable`) и прогресс
 - `src/ui/main_window.py`:
   - layout, привязка кнопок, пайплайн действий, обработка ошибок
+  - выбор `Frame Width/Frame Height` в блоке пайплайна перед `Extract Frames` с применением размера сразу после извлечения
   - единый выбор фона предпросмотра `Preview Background` (`Black/White/Green`) для статичного spritesheet и окна анимации
   - запуск отдельного окна предпросмотра анимации из готового spritesheet
 - `src/ui/spritesheet_preview_dialog.py`:
@@ -65,25 +67,29 @@
    - `Target FPS`
    - `Exact Frame Count` (по умолчанию)
    - В режиме `Exact Frame Count` используется поле `Count`; в режиме `Target FPS` используется поле `FPS`
-3. `Extract Frames`
-4. Автопродолжение пайплайна после извлечения:
+3. Выбор размера кадра перед извлечением:
+   - `Frame Width`, `Frame Height` (фиксированный список: `16, 32, 64, 128, 256, 512, 1024`)
+4. `Extract Frames`
+   - после извлечения кадры сразу приводятся к выбранному `Frame Width/Frame Height`
+5. Автопродолжение пайплайна после извлечения:
    - если `Auto remove background after extraction` выключен, сразу запускается `Build SpriteSheet`
    - если `Auto remove background after extraction` включен, сначала запускается `Remove Background`, затем автоматически запускается `Build SpriteSheet` на кадрах из `temp/cut`
-5. (Опционально вручную) `Remove Background`
+6. (Опционально вручную) `Remove Background`
    - дополнительные параметры удаления фона (через ползунки):
      - `FG Threshold` (по умолчанию `240`)
      - `BG Threshold` (по умолчанию `10`)
      - `Erode Size` (по умолчанию `10`)
-6. Ввод atlas-параметров (задаются до `Extract Frames` и могут быть изменены перед ручным повторным запуском):
-   - `Columns`, `Rows`, `Frame Width`, `Frame Height`, `Resize Mode`
-   - `Frame Width` и `Frame Height` выбираются из фиксированного списка: `16, 32, 64, 128, 256, 512, 1024`
-7. `Build SpriteSheet` (кнопка доступна и для ручного повторного запуска)
-8. `Video Preview` (опционально)
+   - в текущем режиме сервис использует обычную маску без alpha matting и включает `post_process_mask` для очистки артефактов по краю
+7. Ввод atlas-параметров (могут быть изменены перед ручным повторным запуском):
+   - `Columns`, `Rows`, `Resize Mode`
+   - `Frame Width` и `Frame Height` задаются в блоке извлечения и используются также для сборки atlas
+8. `Build SpriteSheet` (кнопка доступна и для ручного повторного запуска)
+9. `Video Preview` (опционально)
    - открывает отдельное окно и проигрывает кадры из готового spritesheet как анимацию
-9. `Preview Background`
+10. `Preview Background`
    - единый селектор фона предпросмотра: `Black`, `White`, `Green`
    - выбранный цвет сразу применяется к `SpriteSheet Preview` и к открытому окну `Video Preview`
-10. `Export PNG`
+11. `Export PNG`
 
 ## 6. Правила валидации
 

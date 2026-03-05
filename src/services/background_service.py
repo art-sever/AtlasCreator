@@ -41,14 +41,12 @@ class BackgroundService:
             with frame_path.open("rb") as src_file:
                 source_bytes = src_file.read()
 
-            # rembg возвращает PNG-байты с альфаканалом, затем нормализуем формат через Pillow.
+            # Для спрайтов используем базовую маску без alpha matting и включаем post-process очистку.
             try:
                 result_bytes = remove_fn(
                     source_bytes,
-                    alpha_matting=True,
-                    alpha_matting_foreground_threshold=removal_params.fg_threshold,
-                    alpha_matting_background_threshold=removal_params.bg_threshold,
-                    alpha_matting_erode_size=removal_params.erode_size,
+                    alpha_matting=False,
+                    post_process_mask=True,
                 )
             except Exception as exc:  # noqa: BLE001
                 raise RuntimeError(f"Ошибка rembg при обработке {frame_path.name}: {exc}") from exc

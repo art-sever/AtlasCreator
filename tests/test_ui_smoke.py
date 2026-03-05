@@ -2,6 +2,7 @@ import os
 from pathlib import Path
 
 import pytest
+from PIL import Image
 
 pytest.importorskip("PySide6")
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -62,6 +63,44 @@ def test_frame_size_dropdowns_use_fixed_values() -> None:
     assert actual_height_sizes == expected_sizes
     assert window.frame_width_combo.currentData() == 512
     assert window.frame_height_combo.currentData() == 512
+    window.close()
+
+
+def test_extract_task_resizes_frames_to_selected_size(tmp_path: Path) -> None:
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow()
+
+    out_dir = tmp_path / "frames"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    window.frame_width_combo.setCurrentText("64")
+    window.frame_height_combo.setCurrentText("32")
+
+    def _fake_extract(_video_path: Path, _params, target_dir: Path, progress_cb=None) -> list[Path]:
+        created: list[Path] = []
+        for index in range(2):
+            frame_path = target_dir / f"frame_{index + 1:06d}.png"
+            Image.new("RGBA", (120, 90), (255, 0, 0, 255)).save(frame_path)
+            created.append(frame_path)
+        if progress_cb is not None:
+            progress_cb(100, "ok")
+        return created
+
+    window.video_service.extract_frames = _fake_extract  # type: ignore[method-assign]
+
+    extracted = window._extract_frames_task(
+        video_path=tmp_path / "input.mp4",
+        extraction_params=window._collect_extraction_params(),
+        atlas_params=window._collect_atlas_params(),
+        frames_dir=out_dir,
+        progress_cb=lambda _value, _message: None,
+    )
+
+    assert len(extracted) == 2
+    for frame_path in extracted:
+        with Image.open(frame_path) as frame_image:
+            assert frame_image.size == (64, 32)
+            assert frame_image.mode == "RGBA"
+
     window.close()
 
 

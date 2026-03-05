@@ -194,6 +194,20 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.count_label)
         layout.addWidget(self.count_spin)
 
+        frame_size_row = QGridLayout()
+        frame_size_row.addWidget(QLabel("Frame Width"), 0, 0)
+        self.frame_width_combo = QComboBox()
+        frame_size_row.addWidget(self.frame_width_combo, 0, 1)
+        frame_size_row.addWidget(QLabel("Frame Height"), 0, 2)
+        self.frame_height_combo = QComboBox()
+        frame_size_row.addWidget(self.frame_height_combo, 0, 3)
+        for size in self.FRAME_SIZE_OPTIONS:
+            self.frame_width_combo.addItem(str(size), size)
+            self.frame_height_combo.addItem(str(size), size)
+        self.frame_width_combo.setCurrentText("512")
+        self.frame_height_combo.setCurrentText("512")
+        layout.addLayout(frame_size_row)
+
         self.extract_button = QPushButton("Extract Frames")
         self.remove_bg_button = QPushButton("Remove Background")
         self.auto_remove_checkbox = QCheckBox("Auto remove background after extraction")
@@ -276,14 +290,6 @@ class MainWindow(QMainWindow):
         self.rows_spin.setRange(1, 1024)
         self.rows_spin.setValue(2)
 
-        self.frame_width_combo = QComboBox()
-        self.frame_height_combo = QComboBox()
-        for size in self.FRAME_SIZE_OPTIONS:
-            self.frame_width_combo.addItem(str(size), size)
-            self.frame_height_combo.addItem(str(size), size)
-        self.frame_width_combo.setCurrentText("512")
-        self.frame_height_combo.setCurrentText("512")
-
         self.resize_mode_combo = QComboBox()
         self.resize_mode_combo.addItem("Keep Aspect + Fit", ResizeMode.FIT)
         self.resize_mode_combo.addItem("Crop Center", ResizeMode.CROP_CENTER)
@@ -297,16 +303,11 @@ class MainWindow(QMainWindow):
         layout.addWidget(QLabel("Rows"), 0, 2)
         layout.addWidget(self.rows_spin, 0, 3)
 
-        layout.addWidget(QLabel("Frame Width"), 1, 0)
-        layout.addWidget(self.frame_width_combo, 1, 1)
-        layout.addWidget(QLabel("Frame Height"), 1, 2)
-        layout.addWidget(self.frame_height_combo, 1, 3)
+        layout.addWidget(QLabel("Resize Mode"), 1, 0)
+        layout.addWidget(self.resize_mode_combo, 1, 1, 1, 3)
 
-        layout.addWidget(QLabel("Resize Mode"), 2, 0)
-        layout.addWidget(self.resize_mode_combo, 2, 1, 1, 3)
-
-        layout.addWidget(self.build_button, 3, 2)
-        layout.addWidget(self.export_button, 3, 3)
+        layout.addWidget(self.build_button, 2, 2)
+        layout.addWidget(self.export_button, 2, 3)
 
         return group
 
@@ -564,7 +565,8 @@ class MainWindow(QMainWindow):
 
         try:
             self.tooling_service.ensure_ffmpeg_tools()
-            params = self._collect_extraction_params()
+            extraction_params = self._collect_extraction_params()
+            atlas_params = self._collect_atlas_params()
         except Exception as exc:  # noqa: BLE001
             self._show_error(str(exc))
             return
@@ -575,7 +577,13 @@ class MainWindow(QMainWindow):
         self._auto_build_pending = False
         self._refresh_action_states()
 
-        worker = TaskWorker(self.video_service.extract_frames, self.state.video_path, params, self.state.frames_dir)
+        worker = TaskWorker(
+            self._extract_frames_task,
+            self.state.video_path,
+            extraction_params,
+            atlas_params,
+            self.state.frames_dir,
+        )
         worker.signals.progress.connect(self._on_worker_progress, Qt.ConnectionType.QueuedConnection)
         worker.signals.result.connect(self._on_extract_completed, Qt.ConnectionType.QueuedConnection)
         worker.signals.error.connect(
@@ -583,6 +591,40 @@ class MainWindow(QMainWindow):
             Qt.ConnectionType.QueuedConnection,
         )
         self._start_worker(worker, "Извлечение кадров")
+
+    def _extract_frames_task(
+        self,
+        video_path: Path,
+        extraction_params: ExtractionParams,
+        atlas_params: AtlasParams,
+        frames_dir: Path,
+        progress_cb,
+    ) -> list[Path]:
+        raw_frames = self.video_service.extract_frames(
+            video_path,
+            extraction_params,
+            frames_dir,
+            progress_cb=lambda value, message: progress_cb(int(value * 0.65), message),
+        )
+
+        # На шаге extract сразу приводим кадры к выбранному размеру, чтобы дальше пайплайн работал с целевым форматом.
+        prepared_frames = self.image_service.prepare_frames(
+            raw_frames,
+            width=atlas_params.frame_width,
+            height=atlas_params.frame_height,
+            mode=atlas_params.resize_mode,
+            progress_cb=lambda value, _msg: progress_cb(
+                65 + int(value * 0.35),
+                "Подготовка размера кадров",
+            ),
+        )
+
+        for frame_path, prepared_frame in zip(raw_frames, prepared_frames):
+            prepared_frame.save(frame_path, "PNG")
+            prepared_frame.close()
+
+        progress_cb(100, "Извлечение и ресайз кадров завершены")
+        return raw_frames
 
     def _on_extract_completed(self, frames: list[Path]) -> None:
         self.state.extracted_frames = sorted(frames, key=VideoService.parse_frame_index_from_filename)
