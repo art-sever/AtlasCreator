@@ -34,3 +34,18 @@ def test_exact_count_mode_switches_input_field() -> None:
     assert window.count_spin.isVisible()
     assert not window.fps_spin.isVisible()
     window.close()
+
+
+def test_frame_size_dropdowns_use_fixed_values() -> None:
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow()
+
+    expected_sizes = [16, 32, 64, 128, 256, 512, 1024]
+    actual_width_sizes = [window.frame_width_combo.itemData(idx) for idx in range(window.frame_width_combo.count())]
+    actual_height_sizes = [window.frame_height_combo.itemData(idx) for idx in range(window.frame_height_combo.count())]
+
+    assert actual_width_sizes == expected_sizes
+    assert actual_height_sizes == expected_sizes
+    assert window.frame_width_combo.currentData() == 512
+    assert window.frame_height_combo.currentData() == 512
+    window.close()

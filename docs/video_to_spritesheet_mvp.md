@@ -63,6 +63,7 @@
 4. (Опционально автоматически) `Remove Background`
 5. Ввод atlas-параметров:
    - `Columns`, `Rows`, `Frame Width`, `Frame Height`, `Resize Mode`
+   - `Frame Width` и `Frame Height` выбираются из фиксированного списка: `16, 32, 64, 128, 256, 512, 1024`
 6. `Build SpriteSheet`
 7. `Export PNG`
 
@@ -71,7 +72,8 @@
 - Видео должно быть выбрано до извлечения
 - `FPS > 0`
 - `Count > 0`
-- `Columns/Rows/Frame Width/Frame Height > 0`
+- `Columns/Rows > 0`
+- `Frame Width` и `Frame Height` должны быть одним из значений списка: `16, 32, 64, 128, 256, 512, 1024`
 - `len(frames) <= columns * rows`
 
 При нарушении условий показывается короткая ошибка, UI не падает.

@@ -38,6 +38,8 @@ from src.ui.workers import TaskWorker
 
 
 class MainWindow(QMainWindow):
+    FRAME_SIZE_OPTIONS = (16, 32, 64, 128, 256, 512, 1024)
+
     def __init__(self) -> None:
         super().__init__()
 
@@ -217,13 +219,13 @@ class MainWindow(QMainWindow):
         self.rows_spin.setRange(1, 1024)
         self.rows_spin.setValue(2)
 
-        self.frame_width_spin = QSpinBox()
-        self.frame_width_spin.setRange(1, 8192)
-        self.frame_width_spin.setValue(512)
-
-        self.frame_height_spin = QSpinBox()
-        self.frame_height_spin.setRange(1, 8192)
-        self.frame_height_spin.setValue(512)
+        self.frame_width_combo = QComboBox()
+        self.frame_height_combo = QComboBox()
+        for size in self.FRAME_SIZE_OPTIONS:
+            self.frame_width_combo.addItem(str(size), size)
+            self.frame_height_combo.addItem(str(size), size)
+        self.frame_width_combo.setCurrentText("512")
+        self.frame_height_combo.setCurrentText("512")
 
         self.resize_mode_combo = QComboBox()
         self.resize_mode_combo.addItem("Keep Aspect + Fit", ResizeMode.FIT)
@@ -239,9 +241,9 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.rows_spin, 0, 3)
 
         layout.addWidget(QLabel("Frame Width"), 1, 0)
-        layout.addWidget(self.frame_width_spin, 1, 1)
+        layout.addWidget(self.frame_width_combo, 1, 1)
         layout.addWidget(QLabel("Frame Height"), 1, 2)
-        layout.addWidget(self.frame_height_spin, 1, 3)
+        layout.addWidget(self.frame_height_combo, 1, 3)
 
         layout.addWidget(QLabel("Resize Mode"), 2, 0)
         layout.addWidget(self.resize_mode_combo, 2, 1, 1, 3)
@@ -272,8 +274,8 @@ class MainWindow(QMainWindow):
 
         self.columns_spin.valueChanged.connect(self._update_atlas_params_label)
         self.rows_spin.valueChanged.connect(self._update_atlas_params_label)
-        self.frame_width_spin.valueChanged.connect(self._update_atlas_params_label)
-        self.frame_height_spin.valueChanged.connect(self._update_atlas_params_label)
+        self.frame_width_combo.currentIndexChanged.connect(self._update_atlas_params_label)
+        self.frame_height_combo.currentIndexChanged.connect(self._update_atlas_params_label)
         self.resize_mode_combo.currentIndexChanged.connect(self._update_atlas_params_label)
 
     @Slot()
@@ -419,12 +421,20 @@ class MainWindow(QMainWindow):
         params = AtlasParams(
             columns=int(self.columns_spin.value()),
             rows=int(self.rows_spin.value()),
-            frame_width=int(self.frame_width_spin.value()),
-            frame_height=int(self.frame_height_spin.value()),
+            frame_width=self._current_frame_size(self.frame_width_combo),
+            frame_height=self._current_frame_size(self.frame_height_combo),
             resize_mode=self._current_resize_mode(),
         )
         params.validate()
         return params
+
+    def _current_frame_size(self, combo: QComboBox) -> int:
+        data = combo.currentData()
+        if isinstance(data, int):
+            return data
+        if isinstance(data, str) and data.isdigit():
+            return int(data)
+        return 512
 
     def _current_resize_mode(self) -> ResizeMode:
         data = self.resize_mode_combo.currentData()
