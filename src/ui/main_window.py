@@ -1,0 +1,719 @@
+from __future__ import annotations
+
+import shutil
+import subprocess
+import math
+from pathlib import Path
+
+from PySide6.QtCore import QThreadPool, QTimer, Qt, Slot
+from PySide6.QtGui import QCloseEvent, QPixmap
+from PySide6.QtWidgets import (
+    QCheckBox,
+    QComboBox,
+    QFileDialog,
+    QGridLayout,
+    QGroupBox,
+    QHBoxLayout,
+    QLabel,
+    QMainWindow,
+    QMessageBox,
+    QPushButton,
+    QProgressBar,
+    QSlider,
+    QSpinBox,
+    QDoubleSpinBox,
+    QVBoxLayout,
+    QWidget,
+)
+
+from src.app_state import AppState
+from src.models import AtlasParams, ExtractMode, ExtractionParams, ResizeMode, VideoMeta
+from src.services.atlas_service import AtlasService
+from src.services.background_service import BackgroundService
+from src.services.image_service import ImageService
+from src.services.tooling_service import ToolingService
+from src.services.video_service import VideoService
+from src.ui.workers import TaskWorker
+
+
+class MainWindow(QMainWindow):
+    def __init__(self) -> None:
+        super().__init__()
+
+        self.setWindowTitle("AtlasCreator - Video to SpriteSheet")
+        self.resize(1480, 900)
+
+        project_root = Path(__file__).resolve().parents[2]
+        self.state = AppState.create(project_root)
+        self.state.prepare_temp_dirs(clean=True)
+
+        self.tooling_service = ToolingService()
+        self.video_service = VideoService()
+        self.background_service = BackgroundService(self.tooling_service)
+        self.image_service = ImageService()
+        self.atlas_service = AtlasService()
+
+        self.thread_pool = QThreadPool.globalInstance()
+        self._active_workers: set[TaskWorker] = set()
+        self._busy = False
+        self._auto_remove_pending = False
+        self._is_playing = False
+        self._is_closing = False
+
+        self.preview_timer = QTimer(self)
+        self.preview_timer.setSingleShot(True)
+        self.preview_timer.setInterval(120)
+        self.preview_timer.timeout.connect(self._render_preview_for_slider)
+
+        self.playback_timer = QTimer(self)
+        self.playback_timer.timeout.connect(self._on_playback_tick)
+
+        self._build_ui()
+        self._connect_signals()
+        self._update_sampling_mode_ui()
+        self._update_atlas_params_label()
+        self._refresh_action_states()
+        self._set_status("Готово. Загрузите видео")
+
+    def _build_ui(self) -> None:
+        central = QWidget(self)
+        self.setCentralWidget(central)
+        root_layout = QVBoxLayout(central)
+
+        top_layout = QHBoxLayout()
+        root_layout.addLayout(top_layout, 1)
+
+        left_group = self._build_left_panel()
+        center_group = self._build_pipeline_panel()
+        right_group = self._build_right_panel()
+
+        top_layout.addWidget(left_group, 2)
+        top_layout.addWidget(center_group, 2)
+        top_layout.addWidget(right_group, 2)
+
+        atlas_group = self._build_atlas_panel()
+        root_layout.addWidget(atlas_group)
+
+        status_row = QHBoxLayout()
+        self.status_label = QLabel("")
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setRange(0, 100)
+        self.progress_bar.setValue(0)
+        status_row.addWidget(self.status_label, 1)
+        status_row.addWidget(self.progress_bar, 1)
+        root_layout.addLayout(status_row)
+
+        activity_row = QHBoxLayout()
+        self.activity_label = QLabel("Идет обработка...")
+        self.activity_bar = QProgressBar()
+        # Диапазон 0..0 включает «бесконечный» режим и явно показывает, что задача выполняется.
+        self.activity_bar.setRange(0, 0)
+        self.activity_bar.setTextVisible(False)
+        self.activity_label.setVisible(False)
+        self.activity_bar.setVisible(False)
+        activity_row.addWidget(self.activity_label)
+        activity_row.addWidget(self.activity_bar, 1)
+        root_layout.addLayout(activity_row)
+
+    def _build_left_panel(self) -> QGroupBox:
+        group = QGroupBox("Видео")
+        layout = QVBoxLayout(group)
+
+        self.load_video_button = QPushButton("Load Video")
+        layout.addWidget(self.load_video_button)
+
+        self.video_info_label = QLabel("Видео не загружено")
+        self.video_info_label.setWordWrap(True)
+        layout.addWidget(self.video_info_label)
+
+        self.video_preview_label = QLabel("Preview")
+        self.video_preview_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.video_preview_label.setMinimumSize(420, 240)
+        self.video_preview_label.setStyleSheet("border: 1px solid #777; background: #111; color: #ccc;")
+        layout.addWidget(self.video_preview_label, 1)
+
+        self.timeline_slider = QSlider(Qt.Orientation.Horizontal)
+        self.timeline_slider.setRange(0, 0)
+        layout.addWidget(self.timeline_slider)
+
+        controls_row = QHBoxLayout()
+        self.play_button = QPushButton("Play")
+        self.pause_button = QPushButton("Pause")
+        self.prev_frame_button = QPushButton("Prev Frame")
+        self.next_frame_button = QPushButton("Next Frame")
+        controls_row.addWidget(self.play_button)
+        controls_row.addWidget(self.pause_button)
+        controls_row.addWidget(self.prev_frame_button)
+        controls_row.addWidget(self.next_frame_button)
+        layout.addLayout(controls_row)
+
+        return group
+
+    def _build_pipeline_panel(self) -> QGroupBox:
+        group = QGroupBox("Пайплайн")
+        layout = QVBoxLayout(group)
+
+        self.sampling_mode_combo = QComboBox()
+        self.sampling_mode_combo.addItem("Target FPS", ExtractMode.TARGET_FPS)
+        self.sampling_mode_combo.addItem("Exact Frame Count", ExtractMode.EXACT_COUNT)
+        layout.addWidget(QLabel("Режим выборки кадров"))
+        layout.addWidget(self.sampling_mode_combo)
+
+        self.fps_spin = QDoubleSpinBox()
+        self.fps_spin.setRange(0.1, 240.0)
+        self.fps_spin.setDecimals(2)
+        self.fps_spin.setValue(8.0)
+
+        self.count_spin = QSpinBox()
+        self.count_spin.setRange(1, 2000)
+        self.count_spin.setValue(8)
+
+        self.fps_label = QLabel("FPS")
+        self.count_label = QLabel("Count")
+        layout.addWidget(self.fps_label)
+        layout.addWidget(self.fps_spin)
+        layout.addWidget(self.count_label)
+        layout.addWidget(self.count_spin)
+
+        self.extract_button = QPushButton("Extract Frames")
+        self.remove_bg_button = QPushButton("Remove Background")
+        self.auto_remove_checkbox = QCheckBox("Auto remove background after extraction")
+
+        layout.addWidget(self.extract_button)
+        layout.addWidget(self.remove_bg_button)
+        layout.addWidget(self.auto_remove_checkbox)
+        layout.addStretch(1)
+
+        return group
+
+    def _build_right_panel(self) -> QGroupBox:
+        group = QGroupBox("SpriteSheet")
+        layout = QVBoxLayout(group)
+
+        self.atlas_preview_label = QLabel("SpriteSheet Preview")
+        self.atlas_preview_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.atlas_preview_label.setMinimumSize(420, 240)
+        self.atlas_preview_label.setStyleSheet("border: 1px solid #777; background: #111; color: #ccc;")
+        layout.addWidget(self.atlas_preview_label, 1)
+
+        self.atlas_params_label = QLabel("Параметры atlas не заданы")
+        self.atlas_params_label.setWordWrap(True)
+        layout.addWidget(self.atlas_params_label)
+
+        return group
+
+    def _build_atlas_panel(self) -> QGroupBox:
+        group = QGroupBox("Настройки atlas")
+        layout = QGridLayout(group)
+
+        self.columns_spin = QSpinBox()
+        self.columns_spin.setRange(1, 1024)
+        self.columns_spin.setValue(4)
+
+        self.rows_spin = QSpinBox()
+        self.rows_spin.setRange(1, 1024)
+        self.rows_spin.setValue(2)
+
+        self.frame_width_spin = QSpinBox()
+        self.frame_width_spin.setRange(1, 8192)
+        self.frame_width_spin.setValue(512)
+
+        self.frame_height_spin = QSpinBox()
+        self.frame_height_spin.setRange(1, 8192)
+        self.frame_height_spin.setValue(512)
+
+        self.resize_mode_combo = QComboBox()
+        self.resize_mode_combo.addItem("Keep Aspect + Fit", ResizeMode.FIT)
+        self.resize_mode_combo.addItem("Crop Center", ResizeMode.CROP_CENTER)
+        self.resize_mode_combo.addItem("Stretch", ResizeMode.STRETCH)
+
+        self.build_button = QPushButton("Build SpriteSheet")
+        self.export_button = QPushButton("Export PNG")
+
+        layout.addWidget(QLabel("Columns"), 0, 0)
+        layout.addWidget(self.columns_spin, 0, 1)
+        layout.addWidget(QLabel("Rows"), 0, 2)
+        layout.addWidget(self.rows_spin, 0, 3)
+
+        layout.addWidget(QLabel("Frame Width"), 1, 0)
+        layout.addWidget(self.frame_width_spin, 1, 1)
+        layout.addWidget(QLabel("Frame Height"), 1, 2)
+        layout.addWidget(self.frame_height_spin, 1, 3)
+
+        layout.addWidget(QLabel("Resize Mode"), 2, 0)
+        layout.addWidget(self.resize_mode_combo, 2, 1, 1, 3)
+
+        layout.addWidget(self.build_button, 3, 2)
+        layout.addWidget(self.export_button, 3, 3)
+
+        return group
+
+    def _connect_signals(self) -> None:
+        self.load_video_button.clicked.connect(self._load_video)
+        self.timeline_slider.valueChanged.connect(self._on_timeline_changed)
+
+        self.play_button.clicked.connect(self._play_video)
+        self.pause_button.clicked.connect(self._pause_video)
+        self.prev_frame_button.clicked.connect(self._prev_frame)
+        self.next_frame_button.clicked.connect(self._next_frame)
+
+        self.sampling_mode_combo.currentIndexChanged.connect(self._update_sampling_mode_ui)
+
+        self.extract_button.clicked.connect(self._extract_frames)
+        self.remove_bg_button.clicked.connect(self._remove_background)
+        self.build_button.clicked.connect(self._build_spritesheet)
+        self.export_button.clicked.connect(self._export_png)
+
+        self.columns_spin.valueChanged.connect(self._update_atlas_params_label)
+        self.rows_spin.valueChanged.connect(self._update_atlas_params_label)
+        self.frame_width_spin.valueChanged.connect(self._update_atlas_params_label)
+        self.frame_height_spin.valueChanged.connect(self._update_atlas_params_label)
+        self.resize_mode_combo.currentIndexChanged.connect(self._update_atlas_params_label)
+
+    @Slot()
+    def _load_video(self) -> None:
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Выберите видео",
+            "",
+            "Video Files (*.mp4 *.mov *.m4v *.avi *.mkv)",
+        )
+        if not file_path:
+            return
+
+        try:
+            self.tooling_service.ensure_ffmpeg_tools()
+            video_path = Path(file_path)
+            metadata = self.video_service.get_metadata(video_path)
+        except Exception as exc:  # noqa: BLE001
+            self._show_error(f"Не удалось загрузить видео: {exc}")
+            return
+
+        self._pause_video()
+        self.state.video_path = video_path
+        self.state.video_meta = metadata
+        self.state.reset_pipeline_outputs()
+        self.state.prepare_temp_dirs(clean=True)
+
+        self._update_video_info(metadata)
+        max_position = max(0, int(metadata.duration_sec * 1000))
+        self.timeline_slider.setRange(0, max_position)
+        self.timeline_slider.setValue(0)
+        self._render_preview_at(0.0)
+
+        self.atlas_preview_label.setPixmap(QPixmap())
+        self._set_status(f"Видео загружено: {video_path.name}")
+        self._refresh_action_states()
+
+    def _update_video_info(self, metadata: VideoMeta) -> None:
+        info_lines = [
+            f"Path: {metadata.path}",
+            f"Duration: {metadata.duration_sec:.2f} sec",
+            f"Resolution: {metadata.width}x{metadata.height}",
+            f"FPS: {metadata.fps:.3f}",
+            f"Frames (estimate): {metadata.frame_count_estimate}",
+        ]
+        self.video_info_label.setText("\n".join(info_lines))
+
+    @Slot(int)
+    def _on_timeline_changed(self, value: int) -> None:
+        if self.state.video_path is None:
+            return
+        # Во время проигрывания обновляем превью сразу, иначе debounce-таймер не успевает сработать.
+        if self._is_playing:
+            self.preview_timer.stop()
+            self._render_preview_at(value / 1000.0)
+            return
+        self.preview_timer.start()
+
+    def _render_preview_for_slider(self) -> None:
+        timestamp = self.timeline_slider.value() / 1000.0
+        self._render_preview_at(timestamp)
+
+    def _render_preview_at(self, timestamp_sec: float) -> None:
+        if self.state.video_path is None:
+            return
+
+        preview_path = self.state.preview_dir / "current_preview.png"
+        cmd = [
+            self.video_service.ffmpeg_bin,
+            "-y",
+            "-ss",
+            f"{timestamp_sec:.6f}",
+            "-i",
+            str(self.state.video_path),
+            "-frames:v",
+            "1",
+            "-loglevel",
+            "error",
+            str(preview_path),
+        ]
+        completed = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        if completed.returncode != 0 or not preview_path.exists():
+            return
+        self._set_preview_image(self.video_preview_label, preview_path)
+
+    def _set_preview_image(self, target: QLabel, image_path: Path) -> None:
+        pixmap = QPixmap(str(image_path))
+        if pixmap.isNull():
+            return
+        scaled = pixmap.scaled(
+            target.size(),
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+        target.setPixmap(scaled)
+
+    def _play_video(self) -> None:
+        if self.state.video_meta is None or self._busy:
+            return
+        if self.timeline_slider.value() >= self.timeline_slider.maximum():
+            self.timeline_slider.setValue(self.timeline_slider.minimum())
+        self._is_playing = True
+        self.preview_timer.stop()
+        self.playback_timer.start(self._frame_step_ms())
+
+    def _pause_video(self) -> None:
+        self._is_playing = False
+        self.playback_timer.stop()
+
+    def _frame_step_ms(self) -> int:
+        if self.state.video_meta is None or self.state.video_meta.fps <= 0:
+            return 40
+        return max(1, int(round(1000.0 / self.state.video_meta.fps)))
+
+    def _on_playback_tick(self) -> None:
+        if not self._is_playing:
+            return
+        min_value = self.timeline_slider.minimum()
+        max_value = self.timeline_slider.maximum()
+        next_value = self.timeline_slider.value() + self._frame_step_ms()
+        # Зацикливаем воспроизведение, чтобы Play всегда продолжал проигрывать видео.
+        if next_value > max_value:
+            next_value = min_value
+        self.timeline_slider.setValue(next_value)
+
+    def _prev_frame(self) -> None:
+        self.timeline_slider.setValue(max(self.timeline_slider.minimum(), self.timeline_slider.value() - self._frame_step_ms()))
+
+    def _next_frame(self) -> None:
+        self.timeline_slider.setValue(min(self.timeline_slider.maximum(), self.timeline_slider.value() + self._frame_step_ms()))
+
+    def _update_sampling_mode_ui(self) -> None:
+        mode = self._current_extract_mode()
+        is_fps_mode = mode == ExtractMode.TARGET_FPS
+        self.fps_label.setVisible(is_fps_mode)
+        self.fps_spin.setVisible(is_fps_mode)
+        self.count_label.setVisible(not is_fps_mode)
+        self.count_spin.setVisible(not is_fps_mode)
+
+    def _current_extract_mode(self) -> ExtractMode:
+        data = self.sampling_mode_combo.currentData()
+        if isinstance(data, ExtractMode):
+            return data
+        if isinstance(data, str):
+            try:
+                return ExtractMode(data)
+            except ValueError:
+                return ExtractMode.TARGET_FPS
+        return ExtractMode.TARGET_FPS
+
+    def _collect_extraction_params(self) -> ExtractionParams:
+        mode = self._current_extract_mode()
+        if mode == ExtractMode.TARGET_FPS:
+            params = ExtractionParams(mode=mode, target_fps=float(self.fps_spin.value()))
+        else:
+            params = ExtractionParams(mode=mode, exact_count=int(self.count_spin.value()))
+        params.validate()
+        return params
+
+    def _collect_atlas_params(self) -> AtlasParams:
+        params = AtlasParams(
+            columns=int(self.columns_spin.value()),
+            rows=int(self.rows_spin.value()),
+            frame_width=int(self.frame_width_spin.value()),
+            frame_height=int(self.frame_height_spin.value()),
+            resize_mode=self._current_resize_mode(),
+        )
+        params.validate()
+        return params
+
+    def _current_resize_mode(self) -> ResizeMode:
+        data = self.resize_mode_combo.currentData()
+        if isinstance(data, ResizeMode):
+            return data
+        if isinstance(data, str):
+            try:
+                return ResizeMode(data)
+            except ValueError:
+                return ResizeMode.FIT
+        return ResizeMode.FIT
+
+    def _extract_frames(self) -> None:
+        if self._busy:
+            return
+        if self.state.video_path is None:
+            self._show_error("Сначала выберите видео")
+            return
+
+        try:
+            self.tooling_service.ensure_ffmpeg_tools()
+            params = self._collect_extraction_params()
+        except Exception as exc:  # noqa: BLE001
+            self._show_error(str(exc))
+            return
+
+        self.state.prepare_temp_dirs(clean=True)
+        self.state.reset_pipeline_outputs()
+        self._refresh_action_states()
+
+        worker = TaskWorker(self.video_service.extract_frames, self.state.video_path, params, self.state.frames_dir)
+        worker.signals.progress.connect(self._on_worker_progress, Qt.ConnectionType.QueuedConnection)
+        worker.signals.result.connect(self._on_extract_completed, Qt.ConnectionType.QueuedConnection)
+        worker.signals.error.connect(
+            lambda msg: self._on_worker_error("Не удалось извлечь кадры", msg),
+            Qt.ConnectionType.QueuedConnection,
+        )
+        self._start_worker(worker, "Извлечение кадров")
+
+    def _on_extract_completed(self, frames: list[Path]) -> None:
+        self.state.extracted_frames = sorted(frames, key=VideoService.parse_frame_index_from_filename)
+        self.state.cut_frames = []
+        self.state.atlas_path = None
+        self.atlas_preview_label.setPixmap(QPixmap())
+        self._set_status(f"Извлечено кадров: {len(self.state.extracted_frames)}")
+
+        if self.auto_remove_checkbox.isChecked() and self.state.extracted_frames:
+            self._auto_remove_pending = True
+
+        self._refresh_action_states()
+
+    def _remove_background(self) -> None:
+        if self._busy:
+            return
+        if not self.state.extracted_frames:
+            self._show_error("Сначала извлеките кадры")
+            return
+        try:
+            self.tooling_service.ensure_rembg_remove()
+        except Exception as exc:  # noqa: BLE001
+            self._show_error(str(exc))
+            return
+
+        worker = TaskWorker(self.background_service.remove_background_batch, self.state.extracted_frames, self.state.cut_dir)
+        worker.signals.progress.connect(self._on_worker_progress, Qt.ConnectionType.QueuedConnection)
+        worker.signals.result.connect(self._on_remove_background_completed, Qt.ConnectionType.QueuedConnection)
+        worker.signals.error.connect(
+            lambda msg: self._on_worker_error("Не удалось удалить фон", msg),
+            Qt.ConnectionType.QueuedConnection,
+        )
+        self._start_worker(worker, "Удаление фона")
+
+    def _on_remove_background_completed(self, frames: list[Path]) -> None:
+        self.state.cut_frames = sorted(frames, key=VideoService.parse_frame_index_from_filename)
+        self._set_status(f"Фон удален для кадров: {len(self.state.cut_frames)}")
+        self._refresh_action_states()
+
+    def _build_spritesheet(self) -> None:
+        if self._busy:
+            return
+
+        source_frames = self.state.cut_frames or self.state.extracted_frames
+        if not source_frames:
+            self._show_error("Нет кадров для сборки spritesheet")
+            return
+
+        try:
+            atlas_params = self._collect_atlas_params()
+        except Exception as exc:  # noqa: BLE001
+            self._show_error(str(exc))
+            return
+
+        frame_count = len(source_frames)
+        if frame_count > atlas_params.capacity:
+            self._handle_capacity_overflow(frame_count, atlas_params)
+            return
+
+        self.state.atlas_path = None
+        self._refresh_action_states()
+
+        output_path = self.state.output_dir / "spritesheet.png"
+        worker = TaskWorker(self._build_spritesheet_task, source_frames, atlas_params, output_path)
+        worker.signals.progress.connect(self._on_worker_progress, Qt.ConnectionType.QueuedConnection)
+        worker.signals.result.connect(self._on_build_completed, Qt.ConnectionType.QueuedConnection)
+        worker.signals.error.connect(
+            lambda msg: self._on_worker_error("Не удалось собрать spritesheet", msg),
+            Qt.ConnectionType.QueuedConnection,
+        )
+        self._start_worker(worker, "Сборка spritesheet")
+
+    def _build_spritesheet_task(
+        self,
+        source_frames: list[Path],
+        atlas_params: AtlasParams,
+        output_path: Path,
+        progress_cb,
+    ) -> Path:
+        # Делим прогресс на 2 этапа: подготовка кадров и сборка итогового atlas.
+        prepared_frames = self.image_service.prepare_frames(
+            source_frames,
+            width=atlas_params.frame_width,
+            height=atlas_params.frame_height,
+            mode=atlas_params.resize_mode,
+            progress_cb=lambda value, _msg: progress_cb(int(value * 0.6), "Подготовка кадров"),
+        )
+
+        return self.atlas_service.build_spritesheet(
+            prepared_frames,
+            atlas_params,
+            output_path,
+            progress_cb=lambda value, _msg: progress_cb(60 + int(value * 0.4), "Сборка spritesheet"),
+        )
+
+    def _on_build_completed(self, output_path: Path) -> None:
+        self.state.atlas_path = output_path
+        if output_path.exists():
+            self._set_preview_image(self.atlas_preview_label, output_path)
+        self._set_status(f"Spritesheet собран: {output_path.name}")
+        self._refresh_action_states()
+
+    def _handle_capacity_overflow(self, frame_count: int, atlas_params: AtlasParams) -> None:
+        capacity = atlas_params.capacity
+        needed_rows = math.ceil(frame_count / atlas_params.columns)
+        message = (
+            "Число кадров больше, чем вместимость atlas.\n\n"
+            f"Кадров: {frame_count}\n"
+            f"Вместимость: {capacity} ({atlas_params.columns} x {atlas_params.rows})\n"
+            f"Минимально нужно Rows: {needed_rows} при Columns={atlas_params.columns}\n\n"
+            "Нажмите Yes, чтобы автоматически выставить Rows."
+        )
+        result = QMessageBox.question(
+            self,
+            "Недостаточная вместимость atlas",
+            message,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
+        )
+        if result == QMessageBox.StandardButton.Yes:
+            # Автоматически увеличиваем количество строк до минимально достаточного значения.
+            self.rows_spin.setValue(needed_rows)
+            self._update_atlas_params_label()
+            self._set_status(f"Rows обновлен до {needed_rows}. Повторите Build SpriteSheet.")
+
+    def _export_png(self) -> None:
+        if self.state.atlas_path is None or not self.state.atlas_path.exists():
+            self._show_error("Сначала соберите spritesheet")
+            return
+
+        destination, _ = QFileDialog.getSaveFileName(
+            self,
+            "Экспорт PNG",
+            "spritesheet.png",
+            "PNG Files (*.png)",
+        )
+        if not destination:
+            return
+
+        try:
+            shutil.copy2(self.state.atlas_path, Path(destination))
+        except Exception as exc:  # noqa: BLE001
+            self._show_error(f"Не удалось экспортировать PNG: {exc}")
+            return
+
+        self._set_status(f"PNG экспортирован: {destination}")
+
+    def _update_atlas_params_label(self) -> None:
+        try:
+            params = self._collect_atlas_params()
+            self.atlas_params_label.setText(
+                " | ".join(
+                    [
+                        f"Columns: {params.columns}",
+                        f"Rows: {params.rows}",
+                        f"Frame: {params.frame_width}x{params.frame_height}",
+                        f"Resize: {params.resize_mode.value}",
+                        f"Sheet: {params.sheet_width}x{params.sheet_height}",
+                    ]
+                )
+            )
+        except Exception as exc:  # noqa: BLE001
+            self.atlas_params_label.setText(f"Некорректные параметры atlas: {exc}")
+
+    def _refresh_action_states(self) -> None:
+        has_video = self.state.video_path is not None
+        has_frames = bool(self.state.extracted_frames)
+        has_sheet = self.state.atlas_path is not None and self.state.atlas_path.exists()
+
+        enabled = not self._busy
+        self.load_video_button.setEnabled(enabled)
+        self.extract_button.setEnabled(enabled and has_video)
+        self.remove_bg_button.setEnabled(enabled and has_frames)
+        self.build_button.setEnabled(enabled and has_frames)
+        self.export_button.setEnabled(enabled and has_sheet)
+
+        self.timeline_slider.setEnabled(enabled and has_video)
+        self.play_button.setEnabled(enabled and has_video)
+        self.pause_button.setEnabled(enabled and has_video)
+        self.prev_frame_button.setEnabled(enabled and has_video)
+        self.next_frame_button.setEnabled(enabled and has_video)
+
+    def _set_busy(self, busy: bool, operation: str = "") -> None:
+        self._busy = busy
+        if busy:
+            self.progress_bar.setValue(0)
+            self.activity_label.setVisible(True)
+            self.activity_bar.setVisible(True)
+            if operation:
+                self._set_status(f"Выполняется: {operation}")
+        else:
+            self.activity_label.setVisible(False)
+            self.activity_bar.setVisible(False)
+        self._refresh_action_states()
+
+    def _on_worker_progress(self, value: int, message: str) -> None:
+        if self._is_closing:
+            return
+        self.progress_bar.setValue(value)
+        if message:
+            self._set_status(message)
+
+    def _on_worker_error(self, title: str, details: str) -> None:
+        if self._is_closing:
+            return
+        self._set_status(f"{title}: {details}")
+        self._show_error(f"{title}: {details}")
+
+    def _start_worker(self, worker: TaskWorker, operation: str) -> None:
+        # Храним ссылку на воркер, чтобы Python-объект не уничтожился до завершения задачи.
+        self._active_workers.add(worker)
+        worker.signals.finished.connect(
+            lambda w=worker: self._on_worker_finished(w),
+            Qt.ConnectionType.QueuedConnection,
+        )
+        self._set_busy(True, operation)
+        self.thread_pool.start(worker)
+
+    def _on_worker_finished(self, worker: TaskWorker) -> None:
+        self._active_workers.discard(worker)
+        if self._is_closing:
+            return
+        self._set_busy(False)
+        if self._auto_remove_pending:
+            self._auto_remove_pending = False
+            self._remove_background()
+
+    def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802
+        self._is_closing = True
+        self._pause_video()
+        self.preview_timer.stop()
+        self.playback_timer.stop()
+        self._auto_remove_pending = False
+        self.thread_pool.waitForDone(5000)
+        self._active_workers.clear()
+        super().closeEvent(event)
+
+    def _set_status(self, text: str) -> None:
+        self.status_label.setText(text)
+
+    def _show_error(self, message: str) -> None:
+        QMessageBox.critical(self, "Ошибка", message)

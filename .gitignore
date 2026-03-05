@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+.pytest_cache/
+.pycache_local/
+
+# Локальные рабочие файлы приложения
+temp/frames/*.png
+temp/cut/*.png
+temp/output/*.png
+temp/preview/*.png

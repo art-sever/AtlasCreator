@@ -1,0 +1,127 @@
+# MVP: Video -> Frame Extract -> rembg -> SpriteSheet
+
+## 1. Назначение
+
+Приложение конвертирует видео (`mp4/mov`) в `spritesheet.png` с прозрачным фоном:
+
+1. Извлекает кадры через `FFmpeg`
+2. Удаляет фон через `rembg` (Python API)
+3. Приводит кадры к размеру в одном из 3 режимов ресайза
+4. Собирает atlas (`PNG RGBA`) и экспортирует файл
+
+## 2. Стек
+
+- Python 3.9+
+- PySide6
+- FFmpeg/FFprobe
+- rembg
+- onnxruntime (через установку `rembg[cpu]`)
+- Pillow
+
+## 3. Структура модулей
+
+- `src/models.py`:
+  - `VideoMeta`, `ExtractionParams`, `AtlasParams`
+  - `ExtractMode`, `ResizeMode`
+- `src/app_state.py`:
+  - runtime-состояние UI и путей `temp/`
+- `src/services/video_service.py`:
+  - метаданные (`ffprobe`)
+  - извлечение кадров по FPS
+  - извлечение ровно `N` кадров по равномерным timestamp от начала до конца таймлайна
+- `src/services/background_service.py`:
+  - batch-обработка кадров через `rembg.remove`
+  - нормализация выхода в `RGBA PNG`
+- `src/services/image_service.py`:
+  - режимы `FIT`, `CROP_CENTER`, `STRETCH`
+- `src/services/atlas_service.py`:
+  - сборка atlas и проверка capacity
+- `src/ui/workers.py`:
+  - фоновые задачи (`QRunnable`) и прогресс
+- `src/ui/main_window.py`:
+  - layout, привязка кнопок, пайплайн действий, обработка ошибок
+
+## 4. Временные директории
+
+- `temp/frames/` — извлеченные кадры
+- `temp/cut/` — кадры после удаления фона
+- `temp/output/` — итоговый `spritesheet.png`
+- `temp/preview/` — временный кадр для превью видео
+
+При старте приложения временные PNG очищаются.
+
+## 5. UI-сценарий
+
+1. `Load Video` -> загрузка метаданных + превью
+   - `Play` запускает предпросмотр по таймлайну в зацикленном режиме (после последнего кадра воспроизведение продолжается с начала)
+2. Выбор режима извлечения:
+   - `Target FPS`
+   - `Exact Frame Count`
+   - В режиме `Exact Frame Count` используется поле `Count`; в режиме `Target FPS` используется поле `FPS`
+3. `Extract Frames`
+4. (Опционально автоматически) `Remove Background`
+5. Ввод atlas-параметров:
+   - `Columns`, `Rows`, `Frame Width`, `Frame Height`, `Resize Mode`
+6. `Build SpriteSheet`
+7. `Export PNG`
+
+## 6. Правила валидации
+
+- Видео должно быть выбрано до извлечения
+- `FPS > 0`
+- `Count > 0`
+- `Columns/Rows/Frame Width/Frame Height > 0`
+- `len(frames) <= columns * rows`
+
+При нарушении условий показывается короткая ошибка, UI не падает.
+Если кадров больше вместимости atlas, UI показывает точные значения (`кадров` и `вместимость`) и предлагает автоматически увеличить `Rows` до минимально необходимого значения.
+
+Для `Exact Frame Count` приложение всегда формирует ровно `N` кадров.  
+Кадры выбираются по равномерно распределенным индексам по всей длине видео (от первого до последнего кадра).  
+Если запрошено кадров больше, чем реально есть в видео, показывается ошибка с предложением уменьшить `Exact Frame Count`.
+
+## 7. Потоки и отзывчивость
+
+Тяжелые шаги выполняются в фоне через `QThreadPool`:
+
+- extraction
+- background removal
+- atlas build
+
+Во время фоновой задачи кнопки действий блокируются, прогресс отображается в `QProgressBar`.
+Дополнительно показывается отдельный бесконечный индикатор «Идет обработка...», чтобы пользователь видел активную работу даже до появления процентов.
+
+Для стабильности фоновых задач `QRunnable` удерживаются сильными ссылками в `MainWindow` до завершения.  
+Это предотвращает ошибки времени выполнения вида `QThreadStorage: entry ... destroyed before end of thread` на долгих шагах (например, `rembg`).
+Подключение сигналов воркера выполняется как `QueuedConnection`, чтобы UI-обновления происходили строго в главном потоке.
+
+## 8. Известные ограничения MVP
+
+- Без trim диапазона (`start/end`)
+- Без reorder кадров
+- Без JSON metadata
+- Без сохранения проекта
+- Без упаковки в `.app`
+
+## 9. Запуск
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -e '.[dev]'
+python -m src.main
+```
+
+Если `rembg` был установлен без backend:
+
+```bash
+pip install "rembg[cpu]"
+```
+
+## 10. Тесты
+
+```bash
+pytest
+```
+
+Часть integration-тестов автоматически пропускается, если в среде отсутствуют `ffmpeg/ffprobe/rembg`.
