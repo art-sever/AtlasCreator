@@ -11,6 +11,13 @@ ProgressCallback = Callable[[int, str], None]
 
 
 class ImageService:
+    def save_image_as_rgba_png(self, source_path: Path, destination_path: Path) -> Path:
+        destination_path.parent.mkdir(parents=True, exist_ok=True)
+        with Image.open(source_path) as image:
+            rgba_image = image.convert("RGBA")
+            rgba_image.save(destination_path, format="PNG")
+        return destination_path
+
     def resize_frame_rgba(self, image: Image.Image, width: int, height: int, mode: ResizeMode) -> Image.Image:
         if width <= 0 or height <= 0:
             raise ValueError("Некорректный размер кадра")

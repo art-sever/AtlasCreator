@@ -16,6 +16,11 @@ class ResizeMode(str, Enum):
     STRETCH = "stretch"
 
 
+class MediaKind(str, Enum):
+    VIDEO = "video"
+    IMAGE = "image"
+
+
 @dataclass
 class VideoMeta:
     path: Path

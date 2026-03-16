@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from src.models import VideoMeta
+from src.models import MediaKind, VideoMeta
 
 
 @dataclass
@@ -14,6 +14,8 @@ class AppState:
     cut_dir: Path
     output_dir: Path
     preview_dir: Path
+    media_path: Path | None = None
+    media_kind: MediaKind | None = None
     video_path: Path | None = None
     video_meta: VideoMeta | None = None
     extracted_frames: list[Path] = field(default_factory=list)

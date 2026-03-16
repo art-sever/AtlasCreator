@@ -22,13 +22,15 @@ from PySide6.QtWidgets import (
     QProgressBar,
     QSlider,
     QSpinBox,
+    QStackedWidget,
     QDoubleSpinBox,
     QVBoxLayout,
     QWidget,
 )
+from PIL import Image, UnidentifiedImageError
 
 from src.app_state import AppState
-from src.models import AtlasParams, BackgroundRemovalParams, ExtractMode, ExtractionParams, ResizeMode, VideoMeta
+from src.models import AtlasParams, BackgroundRemovalParams, ExtractMode, ExtractionParams, MediaKind, ResizeMode, VideoMeta
 from src.services.atlas_service import AtlasService
 from src.services.background_service import BackgroundService
 from src.services.image_service import ImageService
@@ -40,6 +42,7 @@ from src.ui.workers import TaskWorker
 
 class MainWindow(QMainWindow):
     FRAME_SIZE_OPTIONS = (16, 32, 64, 128, 256, 512, 1024)
+    SUPPORTED_IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg"}
     PREVIEW_BACKGROUND_OPTIONS = (
         ("Black", "#000000", "#cccccc"),
         ("White", "#ffffff", "#111111"),
@@ -49,7 +52,7 @@ class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
 
-        self.setWindowTitle("AtlasCreator - Video to SpriteSheet")
+        self.setWindowTitle("AtlasCreator - Media to SpriteSheet")
         self.resize(1480, 900)
 
         project_root = Path(__file__).resolve().parents[2]
@@ -82,7 +85,7 @@ class MainWindow(QMainWindow):
         self._update_atlas_params_label()
         self._apply_preview_background()
         self._refresh_action_states()
-        self._set_status("Готово. Загрузите видео")
+        self._set_status("Готово. Загрузите видео или изображение")
 
     def _build_ui(self) -> None:
         central = QWidget(self)
@@ -125,20 +128,28 @@ class MainWindow(QMainWindow):
         root_layout.addLayout(activity_row)
 
     def _build_left_panel(self) -> QGroupBox:
-        group = QGroupBox("Видео")
+        group = QGroupBox("Источник")
         layout = QVBoxLayout(group)
 
-        self.load_video_button = QPushButton("Load Video")
+        self.load_video_button = QPushButton("Load Media")
         layout.addWidget(self.load_video_button)
 
-        self.video_info_label = QLabel("Видео не загружено")
+        self.video_info_label = QLabel("Источник не загружен")
         self.video_info_label.setWordWrap(True)
         layout.addWidget(self.video_info_label)
 
+        self.media_preview_stack = QStackedWidget()
         self.video_widget = QVideoWidget()
         self.video_widget.setMinimumSize(420, 240)
         self.video_widget.setStyleSheet("border: 1px solid #777; background: #111;")
-        layout.addWidget(self.video_widget, 1)
+        self.media_preview_stack.addWidget(self.video_widget)
+
+        self.image_preview_label = QLabel("Image Preview")
+        self.image_preview_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.image_preview_label.setMinimumSize(420, 240)
+        self.image_preview_label.setStyleSheet("border: 1px solid #777; background: #111; color: #cccccc;")
+        self.media_preview_stack.addWidget(self.image_preview_label)
+        layout.addWidget(self.media_preview_stack, 1)
 
         self.timeline_slider = QSlider(Qt.Orientation.Horizontal)
         self.timeline_slider.setRange(0, 0)
@@ -357,26 +368,32 @@ class MainWindow(QMainWindow):
     def _load_video(self) -> None:
         file_path, _ = QFileDialog.getOpenFileName(
             self,
-            "Выберите видео",
+            "Выберите видео или изображение",
             "",
-            "Video Files (*.mp4 *.mov *.m4v *.avi *.mkv)",
+            "Media Files (*.mp4 *.mov *.m4v *.avi *.mkv *.png *.jpg *.jpeg)",
         )
         if not file_path:
             return
 
+        media_path = Path(file_path)
+        if media_path.suffix.lower() in self.SUPPORTED_IMAGE_SUFFIXES:
+            self._load_image_file(media_path)
+            return
+        self._load_video_file(media_path)
+
+    def _load_video_file(self, video_path: Path) -> None:
         try:
             self.tooling_service.ensure_ffmpeg_tools()
-            video_path = Path(file_path)
             metadata = self.video_service.get_metadata(video_path)
         except Exception as exc:  # noqa: BLE001
             self._show_error(f"Не удалось загрузить видео: {exc}")
             return
 
-        self._pause_video()
+        self._reset_loaded_media_state()
+        self.state.media_path = video_path
+        self.state.media_kind = MediaKind.VIDEO
         self.state.video_path = video_path
         self.state.video_meta = metadata
-        self.state.reset_pipeline_outputs()
-        self.state.prepare_temp_dirs(clean=True)
 
         self._update_video_info(metadata)
         max_position = max(0, int(metadata.duration_sec * 1000))
@@ -384,11 +401,65 @@ class MainWindow(QMainWindow):
         self.timeline_slider.setValue(0)
         self.media_player.setSource(QUrl.fromLocalFile(str(video_path.resolve())))
         self.media_player.setPosition(0)
+        self.media_preview_stack.setCurrentWidget(self.video_widget)
 
-        self.atlas_preview_label.setPixmap(QPixmap())
-        self._reset_spritesheet_preview_state(close_dialog=True)
         self._set_status(f"Видео загружено: {video_path.name}")
         self._refresh_action_states()
+
+    def _load_image_file(self, image_path: Path) -> None:
+        try:
+            with Image.open(image_path) as image:
+                image_format = image.format or image_path.suffix.lstrip(".").upper()
+                image_width, image_height = image.size
+        except (UnidentifiedImageError, OSError) as exc:
+            self._show_error(f"Не удалось загрузить изображение: {exc}")
+            return
+
+        self._reset_loaded_media_state()
+        prepared_frame = self.image_service.save_image_as_rgba_png(
+            image_path,
+            self.state.frames_dir / "frame_000001.png",
+        )
+        self.state.media_path = image_path
+        self.state.media_kind = MediaKind.IMAGE
+        self.state.extracted_frames = [prepared_frame]
+
+        self._update_image_info(image_path, image_width, image_height, image_format)
+        self._show_image_preview(prepared_frame)
+        self._set_status(f"Изображение загружено: {image_path.name}")
+        self._refresh_action_states()
+
+    def _reset_loaded_media_state(self) -> None:
+        self._pause_video()
+        self.media_player.stop()
+        self.media_player.setSource(QUrl())
+        self.state.media_path = None
+        self.state.media_kind = None
+        self.state.video_path = None
+        self.state.video_meta = None
+        self.state.reset_pipeline_outputs()
+        self.state.prepare_temp_dirs(clean=True)
+        self._auto_remove_pending = False
+        self._auto_build_pending = False
+        self.timeline_slider.setRange(0, 0)
+        self.timeline_slider.setValue(0)
+        self.image_preview_label.setPixmap(QPixmap())
+        self.atlas_preview_label.setPixmap(QPixmap())
+        self._reset_spritesheet_preview_state(close_dialog=True)
+
+    def _update_image_info(self, image_path: Path, width: int, height: int, image_format: str) -> None:
+        info_lines = [
+            f"Path: {image_path}",
+            "Type: image",
+            f"Format: {image_format}",
+            f"Resolution: {width}x{height}",
+            "Frames: 1",
+        ]
+        self.video_info_label.setText("\n".join(info_lines))
+
+    def _show_image_preview(self, image_path: Path) -> None:
+        self.media_preview_stack.setCurrentWidget(self.image_preview_label)
+        self._set_preview_image(self.image_preview_label, image_path)
 
     def _update_video_info(self, metadata: VideoMeta) -> None:
         info_lines = [
@@ -625,7 +696,10 @@ class MainWindow(QMainWindow):
         if self._busy:
             return
         if not self.state.extracted_frames:
-            self._show_error("Сначала извлеките кадры")
+            if self.state.media_kind == MediaKind.IMAGE:
+                self._show_error("Сначала выберите изображение")
+            else:
+                self._show_error("Сначала извлеките кадры")
             return
         try:
             self.tooling_service.ensure_rembg_remove()
@@ -650,7 +724,11 @@ class MainWindow(QMainWindow):
 
     def _on_remove_background_completed(self, frames: list[Path]) -> None:
         self.state.cut_frames = sorted(frames, key=VideoService.parse_frame_index_from_filename)
-        self._set_status(f"Фон удален для кадров: {len(self.state.cut_frames)}")
+        if self.state.media_kind == MediaKind.IMAGE:
+            self._show_image_preview(self.state.cut_frames[0])
+            self._set_status("Фон удален у изображения")
+        else:
+            self._set_status(f"Фон удален для кадров: {len(self.state.cut_frames)}")
         self._refresh_action_states()
 
     def _build_spritesheet(self) -> None:
@@ -744,26 +822,40 @@ class MainWindow(QMainWindow):
             self._set_status(f"Rows обновлен до {needed_rows}. Повторите Build SpriteSheet.")
 
     def _export_png(self) -> None:
-        if self.state.atlas_path is None or not self.state.atlas_path.exists():
-            self._show_error("Сначала соберите spritesheet")
+        export_source = self._resolve_export_source()
+        if export_source is None or not export_source.exists():
+            self._show_error("Нет PNG для экспорта")
             return
 
+        default_name = self._default_export_filename()
         destination, _ = QFileDialog.getSaveFileName(
             self,
             "Экспорт PNG",
-            "spritesheet.png",
+            default_name,
             "PNG Files (*.png)",
         )
         if not destination:
             return
 
         try:
-            shutil.copy2(self.state.atlas_path, Path(destination))
+            shutil.copy2(export_source, Path(destination))
         except Exception as exc:  # noqa: BLE001
             self._show_error(f"Не удалось экспортировать PNG: {exc}")
             return
 
         self._set_status(f"PNG экспортирован: {destination}")
+
+    def _resolve_export_source(self) -> Path | None:
+        if self.state.atlas_path is not None and self.state.atlas_path.exists():
+            return self.state.atlas_path
+        if self.state.media_kind == MediaKind.IMAGE and self.state.cut_frames:
+            return self.state.cut_frames[0]
+        return None
+
+    def _default_export_filename(self) -> str:
+        if self.state.media_kind == MediaKind.IMAGE and self.state.media_path is not None:
+            return f"{self.state.media_path.stem}_transparent.png"
+        return "spritesheet.png"
 
     def _update_atlas_params_label(self) -> None:
         try:
@@ -783,9 +875,10 @@ class MainWindow(QMainWindow):
             self.atlas_params_label.setText(f"Некорректные параметры atlas: {exc}")
 
     def _refresh_action_states(self) -> None:
-        has_video = self.state.video_path is not None
+        has_video = self.state.media_kind == MediaKind.VIDEO and self.state.video_path is not None
         has_frames = bool(self.state.extracted_frames)
         has_sheet = self.state.atlas_path is not None and self.state.atlas_path.exists()
+        has_exportable_png = self._resolve_export_source() is not None
         has_preview_data = self._preview_atlas_params is not None and self._preview_frame_count > 0
 
         enabled = not self._busy
@@ -794,7 +887,7 @@ class MainWindow(QMainWindow):
         self.remove_bg_button.setEnabled(enabled and has_frames)
         self.build_button.setEnabled(enabled and has_frames)
         self.preview_video_button.setEnabled(enabled and has_sheet and has_preview_data)
-        self.export_button.setEnabled(enabled and has_sheet)
+        self.export_button.setEnabled(enabled and has_exportable_png)
 
         self.timeline_slider.setEnabled(enabled and has_video)
         self.play_button.setEnabled(enabled and has_video)

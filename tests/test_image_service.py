@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from PIL import Image
 
 from src.models import ResizeMode
@@ -37,3 +39,20 @@ def test_resize_stretch_keeps_canvas_size() -> None:
 
     assert resized.size == (80, 120)
     assert resized.mode == "RGBA"
+
+
+def test_save_image_as_rgba_png_converts_jpg_to_png(tmp_path: Path) -> None:
+    service = ImageService()
+    source_path = tmp_path / "source.jpg"
+    out_path = tmp_path / "frames" / "frame_000001.png"
+
+    Image.new("RGB", (32, 24), (10, 20, 30)).save(source_path, format="JPEG")
+
+    saved_path = service.save_image_as_rgba_png(source_path, out_path)
+
+    assert saved_path == out_path
+    assert out_path.exists()
+    with Image.open(out_path) as image:
+        assert image.format == "PNG"
+        assert image.mode == "RGBA"
+        assert image.size == (32, 24)

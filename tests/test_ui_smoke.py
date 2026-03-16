@@ -10,7 +10,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtGui import QColor, QPixmap  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
-from src.models import AtlasParams, ResizeMode  # noqa: E402
+from src.models import AtlasParams, MediaKind, ResizeMode  # noqa: E402
 from src.ui.main_window import MainWindow  # noqa: E402
 from src.ui.workers import TaskWorker  # noqa: E402
 
@@ -109,6 +109,52 @@ def test_spritesheet_video_preview_button_initially_disabled() -> None:
 
     assert window.preview_video_button.text() == "Video Preview"
     assert not window.preview_video_button.isEnabled()
+    window.close()
+
+
+def test_load_image_file_prepares_single_png_frame(tmp_path: Path) -> None:
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow()
+
+    image_path = tmp_path / "portrait.jpg"
+    Image.new("RGB", (96, 64), (120, 80, 40)).save(image_path, format="JPEG")
+
+    window._load_image_file(image_path)
+
+    assert window.state.media_kind == MediaKind.IMAGE
+    assert window.state.media_path == image_path
+    assert window.state.video_path is None
+    assert len(window.state.extracted_frames) == 1
+    prepared_frame = window.state.extracted_frames[0]
+    assert prepared_frame.exists()
+    assert prepared_frame.suffix == ".png"
+    assert window.remove_bg_button.isEnabled()
+    assert not window.extract_button.isEnabled()
+    assert "Type: image" in window.video_info_label.text()
+
+    with Image.open(prepared_frame) as image:
+        assert image.format == "PNG"
+        assert image.mode == "RGBA"
+        assert image.size == (96, 64)
+
+    window.close()
+
+
+def test_image_export_is_enabled_after_background_removal_without_spritesheet(tmp_path: Path) -> None:
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow()
+
+    window.state.media_kind = MediaKind.IMAGE
+    window.state.media_path = tmp_path / "portrait.png"
+    cut_frame = tmp_path / "cut" / "frame_000001.png"
+    cut_frame.parent.mkdir(parents=True, exist_ok=True)
+    Image.new("RGBA", (48, 48), (0, 0, 0, 0)).save(cut_frame)
+
+    window._on_remove_background_completed([cut_frame])
+
+    assert window.export_button.isEnabled()
+    assert window._resolve_export_source() == cut_frame
+    assert window._default_export_filename() == "portrait_transparent.png"
     window.close()
 
 
