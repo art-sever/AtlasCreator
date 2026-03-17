@@ -55,3 +55,33 @@ def test_remove_background_batch_uses_cli_compatible_defaults(tmp_path: Path) ->
 def test_background_removal_params_erode_size_must_be_non_negative() -> None:
     with pytest.raises(ValueError, match="Erode Size"):
         BackgroundRemovalParams(fg_threshold=240, bg_threshold=10, erode_size=-1).validate()
+
+
+def test_remove_background_batch_can_crop_transparent_edges(tmp_path: Path) -> None:
+    source_dir = tmp_path / "frames"
+    cut_dir = tmp_path / "cut"
+    source_dir.mkdir(parents=True, exist_ok=True)
+
+    source = source_dir / "frame_001.png"
+    Image.new("RGBA", (16, 16), (255, 255, 255, 255)).save(source)
+
+    result_image = Image.new("RGBA", (16, 16), (0, 0, 0, 0))
+    for x in range(4, 12):
+        for y in range(5, 11):
+            result_image.putpixel((x, y), (255, 0, 0, 255))
+
+    result_path = tmp_path / "rembg_result.png"
+    result_image.save(result_path, format="PNG")
+
+    fake_tooling = _FakeToolingService(result_path.read_bytes())
+    service = BackgroundService(fake_tooling)
+
+    output_files = service.remove_background_batch(
+        [source],
+        cut_dir,
+        params=BackgroundRemovalParams(crop_to_content=True),
+    )
+
+    assert len(output_files) == 1
+    with Image.open(output_files[0]) as image:
+        assert image.size == (8, 6)

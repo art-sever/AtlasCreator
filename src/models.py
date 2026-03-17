@@ -54,6 +54,7 @@ class BackgroundRemovalParams:
     fg_threshold: int = 240
     bg_threshold: int = 10
     erode_size: int = 10
+    crop_to_content: bool = False
 
     def validate(self) -> None:
         if not 0 <= self.fg_threshold <= 255:

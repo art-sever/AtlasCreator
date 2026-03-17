@@ -39,6 +39,7 @@
   - batch-обработка кадров через `rembg.remove` с сессией модели `birefnet-general` по умолчанию
   - настройки удаления фона: `alpha_matting=False`, `post_process_mask=False`
   - параметры `FG Threshold`, `BG Threshold`, `Erode Size` валидируются на уровне модели и UI
+  - для image-сценария опция `Crop to content` после удаления фона обрезает прозрачные поля по alpha-каналу
   - нормализация выхода в `RGBA PNG`
 - `src/services/image_service.py`:
   - подготовка одиночного изображения в `RGBA PNG` для пайплайна
@@ -89,6 +90,7 @@
      - `FG Threshold` (по умолчанию `240`)
      - `BG Threshold` (по умолчанию `10`)
      - `Erode Size` (по умолчанию `10`)
+   - чекбокс `Crop to content` доступен для одиночного изображения и после `rembg` обрезает прозрачные поля по фактическому контенту
    - в текущем режиме удаления фона используются настройки: `model=birefnet-general`, `alpha_matting=OFF`, `post_process_mask=OFF`
    - для изображения обрабатывается единственный внутренний кадр и результат сразу доступен для `Export PNG`
 7. Ввод atlas-параметров (могут быть изменены перед ручным повторным запуском):
@@ -114,6 +116,7 @@
 - `FG Threshold` в диапазоне `0..255`
 - `BG Threshold` в диапазоне `0..255`
 - `Erode Size >= 0`
+- `Crop to content` применяется только в image-сценарии и не влияет на видео-кадры
 - `Frame Width` и `Frame Height` должны быть одним из значений списка: `16, 32, 64, 128, 256, 512, 1024`
 - `len(frames) <= columns * rows`
 - окно `Video Preview` доступно только после успешной сборки spritesheet

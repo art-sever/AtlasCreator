@@ -15,6 +15,14 @@ class BackgroundService:
     def __init__(self, tooling_service: ToolingService) -> None:
         self.tooling_service = tooling_service
 
+    @staticmethod
+    def _crop_to_visible_content(image: Image.Image) -> Image.Image:
+        alpha_channel = image.getchannel("A")
+        content_bbox = alpha_channel.getbbox()
+        if content_bbox is None:
+            return image.copy()
+        return image.crop(content_bbox)
+
     def remove_background_batch(
         self,
         input_frames: list[Path],
@@ -63,6 +71,10 @@ class BackgroundService:
 
             with Image.open(out_path) as image:
                 rgba_image = image.convert("RGBA")
+                # Для image-сценария можно сразу убрать пустые прозрачные поля
+                # после удаления фона, чтобы сохранить только полезный контент.
+                if removal_params.crop_to_content:
+                    rgba_image = self._crop_to_visible_content(rgba_image)
                 rgba_image.save(out_path, format="PNG")
 
             output_files.append(out_path)

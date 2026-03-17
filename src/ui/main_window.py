@@ -83,6 +83,7 @@ class MainWindow(QMainWindow):
         self._connect_signals()
         self._update_sampling_mode_ui()
         self._update_atlas_params_label()
+        self._sync_image_specific_controls()
         self._apply_preview_background()
         self._refresh_action_states()
         self._set_status("Готово. Загрузите видео или изображение")
@@ -222,6 +223,10 @@ class MainWindow(QMainWindow):
         self.extract_button = QPushButton("Extract Frames")
         self.remove_bg_button = QPushButton("Remove Background")
         self.auto_remove_checkbox = QCheckBox("Auto remove background after extraction")
+        self.crop_to_content_checkbox = QCheckBox("Crop to content")
+        self.crop_to_content_checkbox.setToolTip(
+            "Для изображения после удаления фона обрезает прозрачные поля по фактическому контенту"
+        )
         self.fg_threshold_slider = QSlider(Qt.Orientation.Horizontal)
         self.fg_threshold_slider.setRange(0, 255)
         self.fg_threshold_slider.setValue(240)
@@ -240,6 +245,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.extract_button)
         layout.addWidget(self.remove_bg_button)
         layout.addWidget(self.auto_remove_checkbox)
+        layout.addWidget(self.crop_to_content_checkbox)
 
         fg_row = QHBoxLayout()
         fg_row.addWidget(QLabel("FG Threshold"))
@@ -403,6 +409,7 @@ class MainWindow(QMainWindow):
         self.media_player.setPosition(0)
         self.media_preview_stack.setCurrentWidget(self.video_widget)
 
+        self._sync_image_specific_controls()
         self._set_status(f"Видео загружено: {video_path.name}")
         self._refresh_action_states()
 
@@ -426,6 +433,7 @@ class MainWindow(QMainWindow):
 
         self._update_image_info(image_path, image_width, image_height, image_format)
         self._show_image_preview(prepared_frame)
+        self._sync_image_specific_controls()
         self._set_status(f"Изображение загружено: {image_path.name}")
         self._refresh_action_states()
 
@@ -446,6 +454,7 @@ class MainWindow(QMainWindow):
         self.image_preview_label.setPixmap(QPixmap())
         self.atlas_preview_label.setPixmap(QPixmap())
         self._reset_spritesheet_preview_state(close_dialog=True)
+        self._sync_image_specific_controls()
 
     def _update_image_info(self, image_path: Path, width: int, height: int, image_format: str) -> None:
         info_lines = [
@@ -604,9 +613,16 @@ class MainWindow(QMainWindow):
             fg_threshold=int(self.fg_threshold_slider.value()),
             bg_threshold=int(self.bg_threshold_slider.value()),
             erode_size=int(self.erode_size_slider.value()),
+            crop_to_content=self.state.media_kind == MediaKind.IMAGE and self.crop_to_content_checkbox.isChecked(),
         )
         params.validate()
         return params
+
+    def _sync_image_specific_controls(self) -> None:
+        is_image = self.state.media_kind == MediaKind.IMAGE
+        if not is_image:
+            self.crop_to_content_checkbox.setChecked(False)
+        self.crop_to_content_checkbox.setEnabled((not self._busy) and is_image)
 
     def _current_frame_size(self, combo: QComboBox) -> int:
         data = combo.currentData()
@@ -726,7 +742,12 @@ class MainWindow(QMainWindow):
         self.state.cut_frames = sorted(frames, key=VideoService.parse_frame_index_from_filename)
         if self.state.media_kind == MediaKind.IMAGE:
             self._show_image_preview(self.state.cut_frames[0])
-            self._set_status("Фон удален у изображения")
+            with Image.open(self.state.cut_frames[0]) as image:
+                processed_width, processed_height = image.size
+            if self.crop_to_content_checkbox.isChecked():
+                self._set_status(f"Фон удален, изображение обрезано по контенту: {processed_width}x{processed_height}")
+            else:
+                self._set_status(f"Фон удален у изображения: {processed_width}x{processed_height}")
         else:
             self._set_status(f"Фон удален для кадров: {len(self.state.cut_frames)}")
         self._refresh_action_states()
@@ -888,6 +909,7 @@ class MainWindow(QMainWindow):
         self.build_button.setEnabled(enabled and has_frames)
         self.preview_video_button.setEnabled(enabled and has_sheet and has_preview_data)
         self.export_button.setEnabled(enabled and has_exportable_png)
+        self._sync_image_specific_controls()
 
         self.timeline_slider.setEnabled(enabled and has_video)
         self.play_button.setEnabled(enabled and has_video)

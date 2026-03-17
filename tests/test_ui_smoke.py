@@ -129,6 +129,7 @@ def test_load_image_file_prepares_single_png_frame(tmp_path: Path) -> None:
     assert prepared_frame.exists()
     assert prepared_frame.suffix == ".png"
     assert window.remove_bg_button.isEnabled()
+    assert window.crop_to_content_checkbox.isEnabled()
     assert not window.extract_button.isEnabled()
     assert "Type: image" in window.video_info_label.text()
 
@@ -174,6 +175,8 @@ def test_background_removal_controls_have_defaults() -> None:
     assert window.fg_threshold_slider.value() == 240
     assert window.bg_threshold_slider.value() == 10
     assert window.erode_size_slider.value() == 10
+    assert window.crop_to_content_checkbox.isChecked() is False
+    assert window.crop_to_content_checkbox.isEnabled() is False
     assert window.fg_threshold_value_label.text() == "240"
     assert window.bg_threshold_value_label.text() == "10"
     assert window.erode_size_value_label.text() == "10"
@@ -189,6 +192,26 @@ def test_background_removal_controls_have_defaults() -> None:
     assert params.fg_threshold == 200
     assert params.bg_threshold == 30
     assert params.erode_size == 7
+    assert params.crop_to_content is False
+    window.close()
+
+
+def test_collect_background_removal_params_enables_crop_only_for_image(tmp_path: Path) -> None:
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow()
+
+    image_path = tmp_path / "portrait.png"
+    Image.new("RGBA", (40, 20), (255, 255, 255, 255)).save(image_path)
+    window._load_image_file(image_path)
+    window.crop_to_content_checkbox.setChecked(True)
+
+    image_params = window._collect_background_removal_params()
+
+    window.state.media_kind = MediaKind.VIDEO
+    video_params = window._collect_background_removal_params()
+
+    assert image_params.crop_to_content is True
+    assert video_params.crop_to_content is False
     window.close()
 
 
